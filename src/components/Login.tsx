@@ -1,16 +1,16 @@
 import { useState } from 'react';
 import { LogIn, Wallet, AlertCircle, HelpCircle, Loader2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { signInWithGoogle, signInWithGoogleRedirect } from '../firebase';
+import { signInWithGoogle } from '../firebase';
 
 export default function Login() {
-  const [loading, setLoading] = useState<'popup' | 'redirect' | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<{ code: string; message: string; hostname?: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
   const handleLoginPopup = async () => {
     try {
-      setLoading('popup');
+      setLoading(true);
       setError(null);
       await signInWithGoogle();
     } catch (err: any) {
@@ -22,25 +22,7 @@ export default function Login() {
         message: errorMessage,
         hostname: window.location.hostname
       });
-      setLoading(null);
-    }
-  };
-
-  const handleLoginRedirect = async () => {
-    try {
-      setLoading('redirect');
-      setError(null);
-      await signInWithGoogleRedirect();
-    } catch (err: any) {
-      console.error("Firebase Login Error:", err);
-      const errorCode = err?.code || 'unknown';
-      const errorMessage = err?.message || String(err);
-      setError({
-        code: errorCode,
-        message: errorMessage,
-        hostname: window.location.hostname
-      });
-      setLoading(null);
+      setLoading(false);
     }
   };
 
@@ -105,7 +87,7 @@ export default function Login() {
                     </div>
                   ) : error.code === 'auth/popup-blocked' ? (
                     <p className="text-xs">
-                      Prohlížeč zablokoval vyskakovací okno pro přihlášení. Povolte prosím vyskakovací okna nebo použijte <strong>metodu přesměrování (Redirect)</strong> níže.
+                      Prohlížeč zablokoval vyskakovací okno pro přihlášení. Povolte prosím vyskakovací okna v nastavení vašeho prohlížeče.
                     </p>
                   ) : error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request' ? (
                     <p className="text-xs">
@@ -133,10 +115,7 @@ export default function Login() {
                 <div className="space-y-1.5 text-xs leading-relaxed">
                   <p className="font-bold text-sm">Průvodce řešením přihlášení:</p>
                   <p>
-                    <strong>Popup (Vyskakovací okno):</strong> Standardní rychlá metoda. Může selhat na mobilech nebo při přísném nastavení prohlížeče.
-                  </p>
-                  <p>
-                    <strong>Redirect (Přesměrování):</strong> Nejspolehlivější metoda pro mobilní prohlížeče, Vercel a integrované prohlížeče (Facebook/Instagram), protože neotevírá samostatné okno.
+                    Pro řádné přihlášení je zapotřebí povolit vyskakovací okna (Popups) pro tuto stránku v nastavení vašeho prohlížeče. Přihlašování probíhá bezpečně přes Google účet.
                   </p>
                 </div>
               </div>
@@ -147,26 +126,15 @@ export default function Login() {
         <div className="space-y-3">
           <button
             onClick={handleLoginPopup}
-            disabled={loading !== null}
+            disabled={loading}
             className="w-full bg-blue-600 dark:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 hover:bg-blue-700 dark:hover:bg-blue-600 transition-all active:scale-95 group disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-blue-500/10"
           >
-            {loading === 'popup' ? (
+            {loading ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
               <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
             )}
-            {loading === 'popup' ? 'Otevírání okna...' : 'Přihlásit se přes Google'}
-          </button>
-
-          <button
-            onClick={handleLoginRedirect}
-            disabled={loading !== null}
-            className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-3.5 px-6 rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none border border-slate-200/50 dark:border-slate-700/50 text-xs uppercase tracking-widest"
-          >
-            {loading === 'redirect' ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : null}
-            {loading === 'redirect' ? 'Přesměrovávání...' : 'Záložní metoda (Přesměrování)'}
+            {loading ? 'Otevírání okna...' : 'Přihlásit se přes Google'}
           </button>
         </div>
 
