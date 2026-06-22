@@ -45,7 +45,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <Login onLogin={signInWithGoogle} />;
+    return <Login />;
   }
 
   if (!selectedGroup) {
