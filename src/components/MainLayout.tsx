@@ -1,0 +1,303 @@
+import { useState } from 'react';
+import { User } from 'firebase/auth';
+import { Group, Period } from '../types';
+import Dashboard from './Dashboard';
+import DebtList from './DebtList';
+import RecordFine from './RecordFine';
+import CashboxManagement from './CashboxManagement';
+import ManualTransactionForm from './ManualTransactionForm';
+import QuickPayment from './QuickPayment';
+import Settings from './Settings';
+import { 
+  LayoutDashboard, 
+  Users, 
+  PlusCircle, 
+  Wallet, 
+  Settings as SettingsIcon, 
+  ChevronLeft,
+  Menu,
+  X,
+  CreditCard,
+  TrendingDown,
+  TrendingUp,
+  ReceiptText
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { cn } from '../utils';
+
+interface MainLayoutProps {
+  user: User;
+  group: Group;
+  period: Period;
+  onBackToPeriods: () => void;
+  onBackToGroups: () => void;
+}
+
+type Section = 'dashboard' | 'debts' | 'record' | 'cashbox' | 'settings';
+
+export default function MainLayout({ user, group, period, onBackToPeriods, onBackToGroups }: MainLayoutProps) {
+  const [activeSection, setActiveSection] = useState<Section>('dashboard');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [quickAction, setQuickAction] = useState<string | null>(null);
+
+  const navigation = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'debts', label: 'Dlužný list', icon: Users },
+    { id: 'record', label: 'Zapisování', icon: PlusCircle },
+    { id: 'cashbox', label: 'Pokladna', icon: Wallet },
+    { id: 'settings', label: 'Nastavení', icon: SettingsIcon },
+  ];
+
+  const renderSection = () => {
+    switch (activeSection) {
+      case 'dashboard':
+        return (
+          <Dashboard 
+            group={group} 
+            period={period} 
+            onNavigate={(s) => setActiveSection(s as Section)} 
+            onOpenQuickAction={setQuickAction}
+          />
+        );
+      case 'debts':
+        return <DebtList group={group} period={period} />;
+      case 'record':
+        return <RecordFine group={group} period={period} />;
+      case 'cashbox':
+        return <CashboxManagement group={group} period={period} />;
+      case 'settings':
+        return <Settings group={group} period={period} />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-bento-bg flex flex-col font-sans">
+      {/* Top Header */}
+      <header className="sticky top-0 z-40 bg-white/70 backdrop-blur-xl border-b border-bento-card-border px-6 py-4">
+        <div className="max-w-[1400px] mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={onBackToPeriods}
+              className="p-2 text-bento-text-muted hover:text-bento-text-main hover:bg-slate-100 rounded-xl transition-all group"
+              title="Zpět na výběr období"
+            >
+              <ChevronLeft className="w-5 h-5 group-hover:-translate-x-0.5 transition-transform" />
+            </button>
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase font-bold tracking-widest text-bento-accent leading-none mb-1">
+                {group.name}
+              </span>
+              <span className="text-base font-bold text-bento-text-main leading-none">
+                {period.name}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="hidden md:flex bg-slate-100/50 p-1 rounded-xl">
+              {navigation.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id as Section)}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all",
+                    activeSection === item.id 
+                      ? "bg-white text-bento-text-main shadow-sm" 
+                      : "text-bento-text-muted hover:text-bento-text-main hover:bg-white/50"
+                  )}
+                >
+                  <item.icon className={cn("w-4 h-4", activeSection === item.id ? "text-bento-accent" : "text-bento-text-muted")} />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            
+            <button 
+              className="md:hidden p-2.5 bg-bento-sidebar text-white rounded-xl active:scale-95 transition-all"
+              onClick={() => setIsMobileMenuOpen(true)}
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+
+            <div className="hidden lg:flex items-center gap-3 pl-4 border-l border-bento-card-border">
+              <div className="text-right hidden xl:block">
+                <p className="text-xs font-bold text-bento-text-main">{user.displayName}</p>
+                <p className="text-[10px] text-bento-text-muted font-medium">{user.email}</p>
+              </div>
+              <img 
+                src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
+                alt="User" 
+                className="w-9 h-9 rounded-full border border-bento-card-border"
+              />
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 p-6 lg:p-8 max-w-[1400px] mx-auto w-full">
+        <motion.div
+          key={activeSection}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+        >
+          {renderSection()}
+        </motion.div>
+      </main>
+
+      {/* Mobile Menu Overlay */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              className="absolute right-0 top-0 bottom-0 w-80 bg-white shadow-2xl p-8"
+            >
+              <div className="flex justify-between items-center mb-10">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white">
+                    <LayoutDashboard className="w-6 h-6" />
+                  </div>
+                  <span className="font-bold text-xl">Menu</span>
+                </div>
+                <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-slate-400">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <nav className="space-y-3">
+                {navigation.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setActiveSection(item.id as Section);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all",
+                      activeSection === item.id 
+                        ? "bg-blue-600 text-white shadow-xl shadow-blue-500/20" 
+                        : "text-slate-500 hover:bg-slate-50"
+                    )}
+                  >
+                    <item.icon className="w-6 h-6" />
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+
+              <div className="absolute bottom-8 left-8 right-8 pt-8 border-t border-slate-100">
+                <div className="flex items-center gap-4 mb-6">
+                  <img 
+                    src={user.photoURL || ''} 
+                    alt="User" 
+                    className="w-12 h-12 rounded-2xl"
+                  />
+                  <div>
+                    <p className="font-bold text-slate-900">{user.displayName}</p>
+                    <p className="text-xs text-slate-400">{user.email}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={onBackToGroups}
+                  className="w-full py-4 text-rose-600 font-bold hover:bg-rose-50 rounded-2xl transition-all"
+                >
+                  Přepnout Kasu
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Quick Action Overlay (Reusable for Dashboard shortcuts) */}
+      <AnimatePresence>
+        {quickAction && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setQuickAction(null)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className={cn(
+                "relative w-full bg-white rounded-[3rem] shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-y-auto custom-scrollbar",
+                quickAction === 'fine' ? "max-w-4xl" : "max-w-md"
+              )}
+            >
+              <div className="flex justify-between items-center mb-6 md:mb-8">
+                <div className="flex items-center gap-3">
+                  <div className={cn(
+                    "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center",
+                    quickAction === 'fine' ? "bg-blue-50 text-blue-600" : 
+                    quickAction === 'income' ? "bg-emerald-50 text-emerald-600" :
+                    quickAction === 'expense' ? "bg-rose-50 text-rose-600" :
+                    "bg-slate-50 text-slate-600"
+                  )}>
+                    {quickAction === 'fine' && <PlusCircle className="w-6 h-6" />}
+                    {quickAction === 'payment' && <CreditCard className="w-6 h-6" />}
+                    {quickAction === 'income' && <TrendingUp className="w-6 h-6" />}
+                    {quickAction === 'expense' && <TrendingDown className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold leading-none">
+                      {quickAction === 'fine' && 'Zapsat pokutu'}
+                      {quickAction === 'payment' && 'Zapsat platbu'}
+                      {quickAction === 'income' && 'Zapsat příjem'}
+                      {quickAction === 'expense' && 'Zapsat výdaj'}
+                    </h2>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted mt-1.5">Rychlá akce • {group.name}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setQuickAction(null)} 
+                  className="p-3 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-2xl transition-all"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              {quickAction === 'fine' && <RecordFine group={group} period={period} onSuccess={() => setQuickAction(null)} />}
+              
+              {quickAction === 'payment' && (
+                <QuickPayment 
+                  group={group} 
+                  period={period} 
+                  onSuccess={() => setQuickAction(null)} 
+                  onCancel={() => setQuickAction(null)} 
+                />
+              )}
+
+              {(quickAction === 'income' || quickAction === 'expense') && (
+                <ManualTransactionForm 
+                  group={group} 
+                  period={period} 
+                  type={quickAction} 
+                  onSuccess={() => setQuickAction(null)} 
+                  onCancel={() => setQuickAction(null)} 
+                />
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

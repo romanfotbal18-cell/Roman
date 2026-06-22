@@ -1,0 +1,2079 @@
+import { useState, useEffect, useMemo } from 'react';
+import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { db } from '../firebase';
+import { handleFirestoreError, formatCurrency, formatDate, cn } from '../utils';
+import { 
+  TrendingUp, 
+  TrendingDown, 
+  Wallet, 
+  Users, 
+  ArrowRight, 
+  PlusCircle, 
+  CreditCard, 
+  ReceiptText, 
+  X,
+  ChevronDown,
+  ChevronUp,
+  BarChart3,
+  Activity,
+  Eraser,
+  RefreshCcw,
+  RotateCcw,
+  Calendar as CalendarIcon,
+  Cake,
+  Info,
+  ChevronRight,
+  ExternalLink,
+  Bell,
+  Target,
+  Trophy,
+  GripVertical,
+  Trash2,
+  Medal,
+  TrendingUp as TrendingUpIcon,
+  TrendingDown as TrendingDownIcon,
+  Flame,
+  ShieldCheck,
+  CalendarDays,
+  PieChart as PieChartIcon
+} from 'lucide-react';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  AreaChart, 
+  Area,
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar
+} from 'recharts';
+import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal } from '../types';
+
+interface DashboardProps {
+  group: Group;
+  period: Period;
+  onNavigate: (section: string) => void;
+  onOpenQuickAction: (action: string) => void;
+}
+
+type DetailType = 'balance' | 'income' | 'expense' | 'debt' | null;
+type StatView = 'sponsors' | 'debtors' | 'violations' | 'monthly' | 'streaks';
+
+export default function Dashboard({ group, period, onNavigate, onOpenQuickAction }: DashboardProps) {
+  const [stats, setStats] = useState({
+    totalIncome: 0,
+    totalExpense: 0,
+    balance: 0,
+    totalDebt: 0
+  });
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [fines, setFines] = useState<Fine[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [currentPeriod, setCurrentPeriod] = useState<Period>(period);
+  const [loading, setLoading] = useState(true);
+  const [isResetting, setIsResetting] = useState(false);
+  const [activeDetail, setActiveDetail] = useState<DetailType>(null);
+  const [selectedEvent, setSelectedEvent] = useState<any>(null);
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+  const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [activeStatView, setActiveStatView] = useState<StatView>('sponsors');
+  const [resetConfirm, setResetConfirm] = useState<{ name: string, field: string } | null>(null);
+  const [calendarDate, setCalendarDate] = useState(new Date());
+
+  const [newGoalName, setNewGoalName] = useState('');
+  const [newGoalAmount, setNewGoalAmount] = useState('');
+
+  useEffect(() => {
+    setCurrentPeriod(period);
+    const periodPath = `groups/${group.id}/periods/${period.id}`;
+    const unsubPeriod = onSnapshot(doc(db, periodPath), (snapshot) => {
+      if (snapshot.exists()) {
+        setCurrentPeriod({ id: snapshot.id, ...snapshot.data() } as Period);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, periodPath);
+    });
+
+    const transactionsPath = `groups/${group.id}/periods/${period.id}/transactions`;
+    const finesPath = `groups/${group.id}/periods/${period.id}/fines`;
+    const membersPath = `groups/${group.id}/periods/${period.id}/members`;
+    const paymentsPath = `groups/${group.id}/periods/${period.id}/payments`;
+    const eventsPath = `groups/${group.id}/periods/${period.id}/events`;
+
+    const unsubMembers = onSnapshot(collection(db, membersPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      setMembers(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, membersPath);
+    });
+
+    const unsubPayments = onSnapshot(collection(db, paymentsPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Payment));
+      setPayments(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, paymentsPath);
+    });
+
+    const unsubTransactions = onSnapshot(query(collection(db, transactionsPath), orderBy('createdAt', 'desc')), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+      const unique = data.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
+      
+      let income = 0;
+      let expense = 0;
+      
+      unique.forEach(t => {
+        if (t.amount > 0) income += t.amount;
+        else expense += t.amount;
+      });
+      
+      setTransactions(unique);
+      setStats(prev => ({
+        ...prev,
+        totalIncome: income,
+        totalExpense: Math.abs(expense),
+        balance: income + expense
+      }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, transactionsPath);
+    });
+
+    const unsubFines = onSnapshot(query(collection(db, finesPath), orderBy('createdAt', 'asc')), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fine));
+      const unique = data.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
+      setFines(unique);
+      setLoading(false);
+    }, (error) => {
+      console.error('[Dashboard] Fines snapshot error:', error);
+      handleFirestoreError(error, OperationType.LIST, finesPath);
+    });
+
+    const unsubEvents = onSnapshot(collection(db, eventsPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Event));
+      setEvents(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, eventsPath);
+    });
+
+    const goalsPath = `groups/${group.id}/periods/${period.id}/goals`;
+    const unsubGoals = onSnapshot(query(collection(db, goalsPath), orderBy('priority', 'asc')), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Goal));
+      setGoals(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, goalsPath);
+    });
+
+    return () => {
+      unsubMembers();
+      unsubPayments();
+      unsubTransactions();
+      unsubFines();
+      unsubEvents();
+      unsubGoals();
+      unsubPeriod();
+    };
+  }, [group.id, period.id]);
+
+  // Recalculate totalDebt when fines or members change
+  useEffect(() => {
+    const memberIds = new Set(members.map(m => m.id));
+    let debt = 0;
+    fines.forEach(f => {
+      // Only count fines for existing members
+      if (!f.paid && memberIds.has(f.memberId)) {
+        debt += (f.amount - (f.paidAmount || 0));
+      }
+    });
+    setStats(prev => ({ ...prev, totalDebt: debt }));
+  }, [fines, members]);
+
+  // Chart Data Calculations
+  const balanceTrendData = useMemo(() => {
+    let runningBalance = 0;
+    return [...transactions]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map(t => {
+        runningBalance += t.amount;
+        return {
+          date: formatDate(t.createdAt),
+          balance: runningBalance,
+          timestamp: t.createdAt
+        };
+      });
+  }, [transactions]);
+
+  const incomeBreakdown = useMemo(() => {
+    const categories: Record<string, number> = {};
+    transactions
+      .filter(t => t.amount > 0)
+      .forEach(t => {
+        const key = t.category || 'Jiné';
+        categories[key] = (categories[key] || 0) + t.amount;
+      });
+    
+    const colors = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#64748b'];
+    return Object.entries(categories)
+      .map(([name, value], i) => ({ 
+        name, 
+        value, 
+        color: colors[i % colors.length] 
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [transactions]);
+
+  const expenseBreakdown = useMemo(() => {
+    const categories: Record<string, number> = {};
+    transactions
+      .filter(t => t.amount < 0)
+      .forEach(t => {
+        const key = t.category || 'Jiné';
+        categories[key] = (categories[key] || 0) + Math.abs(t.amount);
+      });
+    
+    const colors = ['#ef4444', '#f97316', '#ec4899', '#8b5cf6', '#64748b'];
+    return Object.entries(categories)
+      .map(([name, value], i) => ({ 
+        name, 
+        value, 
+        color: colors[i % colors.length] 
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [transactions]);
+
+  const debtTrendData = useMemo(() => {
+    const events: { timestamp: number; change: number }[] = [];
+    const memberIds = new Set(members.map(m => m.id));
+    const resetAt = currentPeriod.resetDebtTrendAt || 0;
+    
+    // Use fines for debt creation, but only for existing members and after reset
+    fines.forEach(f => {
+      if (memberIds.has(f.memberId) && f.createdAt >= resetAt) {
+        events.push({ timestamp: f.createdAt, change: f.amount });
+      }
+    });
+    
+    // Use payments for debt reduction, but only for existing members and after reset
+    payments.forEach(p => {
+      if (memberIds.has(p.memberId) && p.createdAt >= resetAt) {
+        // Find if this payment is for a specific fine or just a general payment
+        // In our app, payments reduce "total debt" for the member
+        events.push({ timestamp: p.createdAt, change: -p.amount });
+      }
+    });
+
+    events.sort((a, b) => a.timestamp - b.timestamp);
+
+    let currentDebt = 0;
+    const history = events.map(e => {
+      currentDebt += e.change;
+      return {
+        date: formatDate(e.timestamp),
+        amount: Math.max(0, currentDebt),
+        timestamp: e.timestamp
+      };
+    });
+
+    // If no data, return empty array
+    if (history.length === 0) return [];
+
+    // Group by date to show only one point per day (last state of that day)
+    const groupedByDate: Record<string, any> = {};
+    history.forEach(h => {
+      groupedByDate[h.date] = h;
+    });
+
+    return Object.values(groupedByDate).sort((a, b) => a.timestamp - b.timestamp);
+  }, [fines, payments, members, currentPeriod.resetDebtTrendAt]);
+
+  const resetDebtTrend = async () => {
+    if (isResetting) return;
+    if (!confirm('Opravdu chcete vynulovat graf vývoje dluhu? Historické údaje v grafu zmizí, ale veškeré pokuty i transakce zůstanou zachovány.')) return;
+    
+    setIsResetting(true);
+    try {
+      const periodRef = doc(db, `groups/${group.id}/periods`, period.id);
+      await updateDoc(periodRef, {
+        resetDebtTrendAt: Date.now()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}/periods/${period.id}`);
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
+  const [selectedCategoryTrans, setSelectedCategoryTrans] = useState<{name: string, transactions: Transaction[]} | null>(null);
+
+  // Category Detail Modal
+  const showCategoryDetails = (category: string | number, type: 'income' | 'expense') => {
+    const filtered = transactions
+      .filter(t => {
+        const tCat = t.category || 'Jiné';
+        const tType = t.amount > 0 ? 'income' : 'expense';
+        return tCat === String(category) && tType === type;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt); // Show newest at top
+    setSelectedCategoryTrans({ name: String(category), transactions: filtered });
+  };
+
+  const toggleDetail = (type: DetailType) => {
+    setActiveDetail(activeDetail === type ? null : type);
+  };
+
+  const birthdayEvents = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+
+    return members.filter(m => m.birthDate).map(m => {
+      const bDate = new Date(m.birthDate!);
+      // Calculate this year's date for this birthday
+      let date = new Date(currentYear, bDate.getMonth(), bDate.getDate());
+      
+      // If birthday already happened this year, show it for next year for sorting/upcoming purposes
+      if (date < new Date(now.setHours(0,0,0,0))) {
+        date = new Date(currentYear + 1, bDate.getMonth(), bDate.getDate());
+      }
+
+      const age = date.getFullYear() - bDate.getFullYear();
+
+      return {
+        id: `birthday-${m.id}`,
+        name: `Narozeniny: ${m.name} (${age}. nar.)`,
+        originalName: m.name,
+        date: date.toISOString().split('T')[0],
+        isBirthday: true,
+        member: m,
+        age
+      };
+    });
+  }, [members]);
+
+  const allUpcomingEvents = useMemo(() => {
+    const now = new Date().toISOString().split('T')[0];
+    const combined = [
+      ...events.map(e => ({ ...e, isBirthday: false })),
+      ...birthdayEvents
+    ];
+
+    return combined
+      .filter(e => e.date >= now)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [events, birthdayEvents]);
+
+  const todayEvent = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const combined = [
+      ...events.map(e => ({ ...e, isBirthday: false })),
+      ...birthdayEvents.map(b => {
+        // For today check, we need the actual birthday date in the CURRENT year
+        const bDate = new Date(b.member.birthDate!);
+        const todayYear = new Date().getFullYear();
+        const dateInCurrentYear = new Date(todayYear, bDate.getMonth(), bDate.getDate()).toISOString().split('T')[0];
+        return { ...b, date: dateInCurrentYear };
+      })
+    ];
+    return combined.find(e => e.date === today);
+  }, [events, birthdayEvents]);
+
+  const upcomingImportant = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    return allUpcomingEvents
+      .filter(e => (e.isImportant || e.isBirthday) && e.date !== today)
+      .slice(0, 2);
+  }, [allUpcomingEvents]);
+
+  const activeGoal = useMemo(() => {
+    return goals.find(g => !g.completed) || goals[0];
+  }, [goals]);
+
+  const goalProgress = useMemo(() => {
+    if (!activeGoal || activeGoal.targetAmount <= 0) return 0;
+    const progress = (stats.balance / activeGoal.targetAmount) * 100;
+    return Math.min(100, Math.max(0, progress));
+  }, [activeGoal, stats.balance]);
+
+  const handleAddGoal = async () => {
+    if (!newGoalName || !newGoalAmount) return;
+    const amount = parseFloat(newGoalAmount);
+    if (isNaN(amount) || amount <= 0) return;
+
+    try {
+      const goalsPath = `groups/${group.id}/periods/${period.id}/goals`;
+      await addDoc(collection(db, goalsPath), {
+        name: newGoalName,
+        targetAmount: amount,
+        priority: goals.length,
+        createdAt: Date.now(),
+        completed: false,
+        periodId: period.id
+      });
+      setNewGoalName('');
+      setNewGoalAmount('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'goals');
+    }
+  };
+
+  const handleDeleteGoal = async (id: string) => {
+    try {
+      const goalRef = doc(db, `groups/${group.id}/periods/${period.id}/goals`, id);
+      await deleteDoc(goalRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'goals');
+    }
+  };
+
+  const handleToggleGoal = async (goal: Goal) => {
+    try {
+      const goalRef = doc(db, `groups/${group.id}/periods/${period.id}/goals`, goal.id);
+      await updateDoc(goalRef, {
+        completed: !goal.completed
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'goals');
+    }
+  };
+
+  const handleReorderGoals = async (reorderedGoals: Goal[]) => {
+    setGoals(reorderedGoals);
+    const batch = writeBatch(db);
+    reorderedGoals.forEach((goal, idx) => {
+      const goalRef = doc(db, `groups/${group.id}/periods/${period.id}/goals`, goal.id);
+      batch.update(goalRef, { priority: idx });
+    });
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'goals-reorder');
+    }
+  };
+
+  const handleResetStats = () => {
+    let statName = '';
+    let field = '';
+
+    switch (activeStatView) {
+      case 'sponsors':
+        statName = 'Sponzoři (plátci)';
+        field = 'sponsorsResetAt';
+        break;
+      case 'debtors':
+        statName = 'Hříšníci (dlužníci)';
+        field = 'debtorsResetAt';
+        break;
+      case 'violations':
+        statName = 'Statistika prohřešků';
+        field = 'violationsResetAt';
+        break;
+      case 'monthly':
+        statName = 'Měsíční vládci';
+        field = 'monthlyResetAt';
+        break;
+      case 'streaks':
+        statName = 'Série bez pokuty';
+        field = 'streaksResetAt';
+        break;
+      default:
+        return;
+    }
+
+    setResetConfirm({ name: statName, field });
+  };
+
+  const confirmReset = async () => {
+    if (!resetConfirm) return;
+    
+    try {
+      const periodRef = doc(db, `groups/${group.id}/periods`, currentPeriod.id);
+      await updateDoc(periodRef, {
+        [resetConfirm.field]: Date.now()
+      });
+      setResetConfirm(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}/periods/${currentPeriod.id}`);
+    }
+  };
+
+  // --- Statistics Logic ---
+  const statsData = useMemo(() => {
+    const globalReset = currentPeriod.statsResetAt || 0;
+
+    // 1. Top 3 Sponsors (Most paid in fines)
+    const paidByMember: Record<string, number> = {};
+    const sponsorsReset = Math.max(currentPeriod.sponsorsResetAt || 0, globalReset);
+    
+    fines
+      .filter(f => f.createdAt > sponsorsReset)
+      .forEach(f => {
+        if (f.paidAmount && f.paidAmount > 0) {
+          paidByMember[f.memberId] = (paidByMember[f.memberId] || 0) + f.paidAmount;
+        }
+      });
+    const topSponsors = Object.entries(paidByMember)
+      .map(([id, amount]) => ({
+        member: members.find(m => m.id === id),
+        amount
+      }))
+      .filter(s => s.member && s.member.active)
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 3);
+
+    // 2. Top 3 Debtors (Unpaid fines)
+    const debtByMember: Record<string, number> = {};
+    const debtorsReset = Math.max(currentPeriod.debtorsResetAt || 0, globalReset);
+    
+    fines
+      .filter(f => f.createdAt > debtorsReset)
+      .forEach(f => {
+        const unpaid = f.amount - (f.paidAmount || 0);
+        if (unpaid > 0) {
+          debtByMember[f.memberId] = (debtByMember[f.memberId] || 0) + unpaid;
+        }
+      });
+    const topDebtors = Object.entries(debtByMember)
+      .map(([id, amount]) => ({
+        member: members.find(m => m.id === id),
+        amount
+      }))
+      .filter(d => d.member && d.member.active)
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 3);
+
+    // 3. Most Frequent Violations (Pie Chart)
+    const violationsByReason: Record<string, number> = {};
+    const violationsReset = Math.max(currentPeriod.violationsResetAt || 0, globalReset);
+    
+    fines
+      .filter(f => f.createdAt > violationsReset)
+      .forEach(f => {
+        const unpaid = f.amount - (f.paidAmount || 0);
+        if (unpaid > 0) {
+          const reason = f.reason || 'Bez popisu';
+          violationsByReason[reason] = (violationsByReason[reason] || 0) + 1;
+        }
+      });
+    const violationChartData = Object.entries(violationsByReason)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5); 
+
+    // 4. Monthly Top Fined
+    const monthlyData: Record<string, Record<string, number>> = {};
+    const monthlyReset = Math.max(currentPeriod.monthlyResetAt || 0, globalReset);
+    
+    fines
+      .filter(f => f.createdAt > monthlyReset)
+      .forEach(f => {
+        const date = new Date(f.createdAt);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        if (!monthlyData[monthKey]) monthlyData[monthKey] = {};
+        monthlyData[monthKey][f.memberId] = (monthlyData[monthKey][f.memberId] || 0) + f.amount;
+      });
+
+    const allMonthlyLeaders = Object.entries(monthlyData)
+      .map(([month, memberTotals]) => {
+        const sortedEntries = Object.entries(memberTotals).sort((a, b) => b[1] - a[1]);
+        const topId = sortedEntries.length > 0 ? sortedEntries[0] : null;
+        return {
+          month,
+          member: topId ? members.find(m => m.id === topId[0]) : null,
+          amount: topId ? topId[1] : 0
+        };
+      })
+      .filter(m => m.member);
+
+    const monthlyLeaderboard = [...allMonthlyLeaders]
+      .sort((a, b) => b.amount - a.amount);
+    
+    const lastMonthLeader = [...allMonthlyLeaders]
+      .sort((a, b) => b.month.localeCompare(a.month))[0] || null;
+    
+    let lastMonthRank = 0;
+    if (lastMonthLeader) {
+      lastMonthRank = monthlyLeaderboard.findIndex(l => l.month === lastMonthLeader.month) + 1;
+    }
+
+    // 5. Streaks 
+    const now = Date.now();
+    const streaks = members
+      .filter(m => m.active)
+      .map(m => {
+        const resetTime = Math.max(currentPeriod.streaksResetAt || 0, globalReset);
+        const memberFines = fines
+          .filter(f => f.memberId === m.id && f.createdAt > resetTime)
+          .sort((a, b) => a.createdAt - b.createdAt);
+        
+        const periodStart = Math.max(currentPeriod.createdAt, resetTime);
+        const fineTimestamps = [periodStart, ...memberFines.map(f => f.createdAt), now];
+        
+        let bestStreakDays = 0;
+        for (let i = 0; i < fineTimestamps.length - 1; i++) {
+          const gapMs = fineTimestamps[i+1] - fineTimestamps[i];
+          const gapDays = Math.floor(gapMs / (1000 * 60 * 60 * 24));
+          if (gapDays > bestStreakDays) {
+            bestStreakDays = gapDays;
+          }
+        }
+        
+        const lastFineDate = memberFines.length > 0 ? memberFines[memberFines.length - 1].createdAt : periodStart;
+        const currentStreakDays = Math.floor((now - lastFineDate) / (1000 * 60 * 60 * 24));
+        
+        return {
+          member: m,
+          currentStreakDays,
+          bestStreakDays
+        };
+      })
+      .sort((a, b) => b.currentStreakDays - a.currentStreakDays);
+
+    const overallChampion = streaks.length > 0 
+      ? [...streaks].sort((a, b) => b.bestStreakDays - a.bestStreakDays)[0]
+      : null;
+
+    return { topSponsors, topDebtors, violationChartData, monthlyLeaderboard, lastMonthLeader, lastMonthRank, streaks, overallChampion };
+  }, [fines, members, currentPeriod]);
+
+  const calculateDaysRemaining = (dateStr: string) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const eventDate = new Date(dateStr);
+    eventDate.setHours(0, 0, 0, 0);
+    const diffTime = eventDate.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays;
+  };
+
+  return (
+    <div className="space-y-6 pb-12">
+      {/* Goal Progress Bar */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        onClick={() => setIsGoalModalOpen(true)}
+        className={cn(
+          "bento-card bg-white border-bento-card-border overflow-hidden cursor-pointer hover:border-bento-accent/30 transition-all",
+          activeGoal ? "p-4 md:p-6" : "p-2.5 md:p-3"
+        )}
+      >
+        {activeGoal ? (
+          <div className="space-y-4">
+            <div className="flex justify-between items-end">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <Target className="w-4 h-4 text-bento-accent" />
+                  <span className="text-[10px] uppercase font-black tracking-[0.2em] text-bento-text-muted">Aktuální cíl</span>
+                </div>
+                <h3 className="text-lg font-black text-bento-text-main tracking-tight">{activeGoal.name}</h3>
+              </div>
+              <div className="text-right">
+                <div className="text-2xl font-black text-bento-accent leading-none mb-1">
+                  {goalProgress.toFixed(0)}%
+                </div>
+                <div className="text-[10px] font-bold text-bento-text-muted uppercase tracking-widest">
+                  {formatCurrency(stats.balance)} / {formatCurrency(activeGoal.targetAmount)}
+                </div>
+              </div>
+            </div>
+            
+            <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden border border-slate-50 flex items-center">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${goalProgress}%` }}
+                transition={{ duration: 1, ease: "easeOut" }}
+                className={cn(
+                  "absolute inset-y-0 left-0 bg-gradient-to-r transition-all duration-500",
+                  goalProgress >= 100 ? "from-emerald-400 to-emerald-500" : "from-bento-accent to-indigo-500"
+                )}
+              />
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                 <div className="w-full h-full opacity-20 bg-[radial-gradient(circle,white_1px,transparent_1px)] bg-[size:10px_10px]" />
+              </div>
+            </div>
+            {goalProgress >= 100 && !activeGoal.completed && (
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded-lg animate-bounce">
+                <Trophy className="w-3 h-3" />
+                Cíl splněn!
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between py-0.5 px-1">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100">
+                <Target className="w-4 h-4 text-slate-300" />
+              </div>
+              <div>
+                <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest leading-none mb-0.5">Zatím žádný cíl</h3>
+                <p className="text-[8px] font-bold text-slate-300 uppercase tracking-widest">Klikněte pro nastavení prvního cíle</p>
+              </div>
+            </div>
+            <PlusCircle className="w-4 h-4 text-slate-200" />
+          </div>
+        )}
+      </motion.div>
+
+      {/* Dynamic Grid Layout */}
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
+        {/* Balance Card */}
+        <motion.div 
+          layout
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          onClick={() => toggleDetail('balance')}
+          className={cn(
+            "md:col-span-2 bento-card text-white border-none shadow-xl transition-all cursor-pointer min-h-[180px] flex flex-col justify-between overflow-hidden relative",
+            activeDetail === 'balance' ? "bg-slate-900 border-bento-accent ring-2 ring-bento-accent" : "bg-bento-sidebar"
+          )}
+        >
+          <div className="flex justify-between items-start z-10">
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase font-black tracking-[0.2em] text-white/50">Pokladna</span>
+              <div className="text-2xl font-black tracking-tighter">
+                {formatCurrency(stats.balance)}
+              </div>
+            </div>
+            <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center backdrop-blur-md">
+              <Wallet className="w-5 h-5 text-bento-accent" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-white/40 font-bold z-10">
+            <CreditCard className="w-3 h-3" />
+            <span>Detail trendu</span>
+          </div>
+          <div className="absolute right-0 bottom-0 top-0 w-1/2 bg-gradient-to-l from-white/5 to-transparent pointer-events-none" />
+        </motion.div>
+
+        {/* Debt Card */}
+        <motion.div 
+          layout
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.1 }}
+          onClick={() => toggleDetail('debt')}
+          className={cn(
+            "md:col-span-2 bento-card min-h-[180px] flex flex-col justify-between transition-all cursor-pointer",
+            activeDetail === 'debt' ? "bg-rose-100 border-rose-300 ring-2 ring-rose-400/20" : "bg-rose-50 border-rose-100"
+          )}
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase font-black tracking-[0.2em] text-rose-400">Dluhy</span>
+              <div className="text-2xl font-black tracking-tighter text-rose-600">
+                {formatCurrency(stats.totalDebt)}
+              </div>
+            </div>
+            <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center">
+              <Users className="w-5 h-5 text-rose-500" />
+            </div>
+          </div>
+          <div className="flex justify-between items-center">
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                onNavigate('debts');
+              }}
+              className="group flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-rose-600 hover:gap-2 transition-all"
+            >
+              List <ArrowRight className="w-3 h-3" />
+            </button>
+            <Activity className="w-3.5 h-3.5 text-rose-300" />
+          </div>
+        </motion.div>
+
+        {/* Events Widget */}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2 }}
+          onClick={() => setIsCalendarModalOpen(true)}
+          className="md:col-span-2 bento-card bg-white border-bento-card-border cursor-pointer hover:border-bento-accent/30 transition-all p-6 group flex flex-col min-h-[180px]"
+        >
+          <div className="flex justify-between items-start mb-4">
+            <span className="text-[10px] uppercase font-black tracking-[0.2em] text-bento-text-muted">Události</span>
+            <div className="w-8 h-8 bg-bento-accent/10 rounded-lg flex items-center justify-center">
+              <CalendarIcon className="w-4 h-4 text-bento-accent" />
+            </div>
+          </div>
+
+          <div className="flex-1 space-y-3">
+            {todayEvent ? (
+              <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-1">
+                  {todayEvent.isBirthday ? <Cake className="w-3.5 h-3.5 text-emerald-600" /> : <Bell className="w-3.5 h-3.5 text-emerald-600" />}
+                  <span className="text-[10px] font-black uppercase text-emerald-600">Dnes</span>
+                </div>
+                <p className="text-[11px] font-black text-emerald-900 line-clamp-1 leading-tight">{todayEvent.name}</p>
+              </div>
+            ) : upcomingImportant.length > 0 ? (
+              <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-1">
+                  {upcomingImportant[0].isBirthday ? <Cake className="w-3.5 h-3.5 text-bento-accent" /> : <Bell className="w-3.5 h-3.5 text-rose-500" />}
+                  <span className={cn("text-[10px] font-black uppercase", upcomingImportant[0].isImportant ? "text-rose-500" : "text-bento-accent")}>
+                    Za {calculateDaysRemaining(upcomingImportant[0].date)} dní
+                  </span>
+                </div>
+                <p className="text-[11px] font-black text-bento-text-main line-clamp-1 leading-tight">{upcomingImportant[0].name}</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-2 opacity-30">
+                <CalendarIcon className="w-6 h-6 mb-1" />
+                <span className="text-[10px] font-bold uppercase">Žádné akce</span>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-widest text-bento-accent group-hover:gap-2 flex items-center transition-all">
+              Kalendář <ChevronRight className="w-3 h-3 ml-1" />
+            </span>
+          </div>
+        </motion.div>
+
+        {/* Income Card */}
+        <motion.div 
+          layout
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2 }}
+          onClick={() => toggleDetail('income')}
+          className={cn(
+            "md:col-span-2 bento-card flex flex-col justify-between transition-all cursor-pointer",
+            activeDetail === 'income' ? "bg-emerald-50 border-emerald-200 ring-2 ring-emerald-500/20" : ""
+          )}
+        >
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Příjmy</span>
+          <div className="flex items-center gap-2 mt-4">
+            <TrendingUp className="w-4 h-4 text-emerald-500" />
+            <span className="text-3xl font-black tracking-tighter text-emerald-600 leading-none">{formatCurrency(stats.totalIncome)}</span>
+          </div>
+        </motion.div>
+
+        {/* Expense Card */}
+        <motion.div 
+          layout
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.3 }}
+          onClick={() => toggleDetail('expense')}
+          className={cn(
+            "md:col-span-2 bento-card flex flex-col justify-between transition-all cursor-pointer",
+            activeDetail === 'expense' ? "bg-rose-50 border-rose-200 ring-2 ring-rose-500/20" : ""
+          )}
+        >
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Výdaje</span>
+          <div className="flex items-center gap-2 mt-4">
+            <TrendingDown className="w-4 h-4 text-rose-500" />
+            <span className="text-3xl font-black tracking-tighter text-rose-500 leading-none">{formatCurrency(stats.totalExpense)}</span>
+          </div>
+        </motion.div>
+
+        {/* Navigation / Action Card */}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.4 }}
+          onClick={() => onNavigate('cashbox')}
+          className="md:col-span-2 bento-card bg-bento-sidebar text-white border-none cursor-pointer hover:scale-[1.02] active:scale-95 transition-all p-6 group flex flex-col justify-between"
+        >
+          <span className="text-[10px] uppercase font-black tracking-[0.2em] text-white/50">Historie a pokladna</span>
+          <div className="mt-4">
+            <div className="font-black flex items-center justify-between uppercase text-xs tracking-widest">
+              Detailní správa
+              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
+        </motion.div>
+
+
+      </div>
+
+      {/* Chart/Detail Section */}
+      <AnimatePresence mode="wait">
+        {activeDetail && (
+          <motion.div
+            initial={{ opacity: 0, height: 0, y: -20 }}
+            animate={{ opacity: 1, height: 'auto', y: 0 }}
+            exit={{ opacity: 0, height: 0, y: -20 }}
+            className="overflow-hidden"
+          >
+            <div className="bento-card border-bento-accent/20 bg-white shadow-xl shadow-slate-200/50 p-0 overflow-hidden">
+              <div className="bg-slate-50 border-b border-bento-card-border p-6 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-1.5 h-1.5 rounded-full bg-bento-accent animate-pulse"></div>
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-main">
+                    {activeDetail === 'balance' && 'Analýza vývoje zůstatku'}
+                    {activeDetail === 'debt' && 'Vývoj nezaplacených pokut'}
+                    {activeDetail === 'income' && 'Struktura příjmů'}
+                    {activeDetail === 'expense' && 'Rozbor výdajů'}
+                  </h3>
+                </div>
+                <button 
+                  onClick={() => setActiveDetail(null)}
+                  className="p-2 text-bento-text-muted hover:bg-white rounded-xl transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-8">
+                {activeDetail === 'balance' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                    <div className="lg:col-span-3 h-[300px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={balanceTrendData}>
+                          <defs>
+                            <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1}/>
+                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="date" hide />
+                          <YAxis hide />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            formatter={(value: any) => [formatCurrency(value), 'Zůstatek']}
+                          />
+                          <Area type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorBalance)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="p-4 bg-slate-50 rounded-2xl">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Počáteční stav</span>
+                        <p className="text-lg font-black text-bento-text-main">{formatCurrency(balanceTrendData[0]?.balance || 0)}</p>
+                      </div>
+                      <div className="p-4 bg-slate-50 rounded-2xl">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Transakcí celkem</span>
+                        <p className="text-lg font-black text-bento-text-main">{transactions.length}</p>
+                      </div>
+                      <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-2xl">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 block mb-1">Finální zůstatek</span>
+                        <p className="text-lg font-black text-blue-600">{formatCurrency(stats.balance)}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeDetail === 'income' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+                    <div className="h-[250px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={incomeBreakdown}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={80}
+                            paddingAngle={5}
+                            dataKey="value"
+                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                            onClick={(data: any) => showCategoryDetails(data.name, 'income')}
+                            className="cursor-pointer"
+                          >
+                            {incomeBreakdown.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="text-sm font-bold text-bento-text-main">Rozdělení příjmů (dle kategorií)</h4>
+                      <div className="space-y-3">
+                        {incomeBreakdown.map((item, i) => (
+                          <button 
+                            key={i} 
+                            onClick={() => showCategoryDetails(item.name, 'income')}
+                            className="w-full flex justify-between items-center p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-bento-card-border group"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
+                              <span className="text-sm font-bold text-bento-text-main group-hover:text-bento-accent">{item.name}</span>
+                            </div>
+                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value)}</span>
+                          </button>
+                        ))}
+                        <div className="pt-3 border-t border-bento-card-border flex justify-between items-center px-3">
+                          <span className="text-xs font-bold text-bento-text-muted">Celkem</span>
+                          <span className="text-base font-black text-emerald-600">{formatCurrency(stats.totalIncome)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeDetail === 'expense' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+                    <div className="h-[250px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={expenseBreakdown}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={80}
+                            paddingAngle={5}
+                            dataKey="value"
+                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                            onClick={(data: any) => showCategoryDetails(data.name, 'expense')}
+                            className="cursor-pointer"
+                          >
+                            {expenseBreakdown.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="text-sm font-bold text-bento-text-main">Rozdělení výdajů (dle kategorií)</h4>
+                      <div className="space-y-3">
+                        {expenseBreakdown.map((item, i) => (
+                          <button 
+                            key={i} 
+                            onClick={() => showCategoryDetails(item.name, 'expense')}
+                            className="w-full flex justify-between items-center p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-bento-card-border group"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
+                              <span className="text-sm font-bold text-bento-text-main group-hover:text-bento-accent">{item.name}</span>
+                            </div>
+                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value)}</span>
+                          </button>
+                        ))}
+                        <div className="pt-3 border-t border-bento-card-border flex justify-between items-center px-3">
+                          <span className="text-xs font-bold text-bento-text-muted">Celkem</span>
+                          <span className="text-base font-black text-rose-600">{formatCurrency(stats.totalExpense)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeDetail === 'debt' && (
+                  <div className="space-y-6">
+                    <div className="h-[300px] relative">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={debtTrendData}>
+                          <defs>
+                            <linearGradient id="colorDebt" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#ef4444" stopOpacity={0.1}/>
+                              <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="date" hide />
+                          <YAxis hide />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            formatter={(value: any) => [formatCurrency(value), 'Celkový dluh']}
+                          />
+                          <Area type="monotone" dataKey="amount" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorDebt)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                      <button 
+                        onClick={resetDebtTrend}
+                        disabled={isResetting}
+                        className="absolute top-2 right-2 p-2 bg-slate-50 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all flex items-center gap-2 text-[10px] uppercase font-bold"
+                        title="Vynulovat graf"
+                      >
+                        <RotateCcw className={cn("w-3 h-3", isResetting && "animate-spin")} />
+                        Vynulovat
+                      </button>
+                    </div>
+                    <p className="text-center text-[10px] uppercase font-bold tracking-[0.2em] text-bento-text-muted">Vývoj celkového nevybraného dluhu v čase</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Statistics Section */}
+      <div className="pt-8">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center justify-between flex-1">
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500"></div>
+              <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Statistiky a vhledy</h3>
+            </div>
+            
+            <button
+              onClick={handleResetStats}
+              className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl font-black text-[9px] uppercase tracking-widest transition-all border border-rose-100"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Anulovat statistiku
+            </button>
+          </div>
+
+          <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200 overflow-x-auto custom-scrollbar no-scrollbar scrollbar-hide">
+            <StatTab 
+              active={activeStatView === 'sponsors'} 
+              onClick={() => setActiveStatView('sponsors')} 
+              icon={Medal} 
+              label="Sponzoři" 
+            />
+            <StatTab 
+              active={activeStatView === 'debtors'} 
+              onClick={() => setActiveStatView('debtors')} 
+              icon={TrendingDownIcon} 
+              label="Dlužníci" 
+            />
+            <StatTab 
+              active={activeStatView === 'violations'} 
+              onClick={() => setActiveStatView('violations')} 
+              icon={PieChartIcon} 
+              label="Prohřešky" 
+            />
+            <StatTab 
+              active={activeStatView === 'monthly'} 
+              onClick={() => setActiveStatView('monthly')} 
+              icon={CalendarDays} 
+              label="Měsíční" 
+            />
+            <StatTab 
+              active={activeStatView === 'streaks'} 
+              onClick={() => setActiveStatView('streaks')} 
+              icon={Flame} 
+              label="Série" 
+            />
+          </div>
+        </div>
+
+        <motion.div
+           key={activeStatView}
+           initial={{ opacity: 0, y: 10 }}
+           animate={{ opacity: 1, y: 0 }}
+           transition={{ duration: 0.3 }}
+           className="bento-card bg-white border-bento-card-border p-6 md:p-8 min-h-[340px]"
+        >
+          {activeStatView === 'sponsors' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-lg font-black text-bento-text-main">Top 3 Štědří plátci</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Členové, kteří nejvíce naplnili kasu (zaplacené pokuty)</p>
+                </div>
+                <Medal className="w-6 h-6 text-amber-500" />
+              </div>
+              
+              <div className="flex flex-col md:flex-row items-end justify-center gap-4 md:gap-8 pt-6">
+                {/* Silver - 2nd */}
+                {statsData.topSponsors[1] && (
+                  <div className="flex flex-col items-center gap-3 order-2 md:order-1">
+                    <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center border-2 border-slate-200 relative">
+                       <span className="text-xl font-black text-slate-400">2</span>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-black text-bento-text-main truncate w-24">
+                        {statsData.topSponsors[1].member?.name}
+                      </p>
+                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[1].amount)}</p>
+                    </div>
+                    <div className="w-20 h-24 bg-slate-100 rounded-t-xl" />
+                  </div>
+                )}
+                
+                {/* Gold - 1st */}
+                {statsData.topSponsors[0] && (
+                  <div className="flex flex-col items-center gap-3 order-1 md:order-2">
+                    <div className="w-16 h-16 rounded-2xl bg-amber-50 flex items-center justify-center border-2 border-amber-200 relative shadow-lg shadow-amber-500/10">
+                       <Trophy className="w-8 h-8 text-amber-500" />
+                       <div className="absolute -top-2 -right-2 bg-amber-500 text-white text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-white">1</div>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-base font-black text-bento-text-main truncate w-32">
+                        {statsData.topSponsors[0].member?.name}
+                      </p>
+                      <p className="text-sm font-black text-amber-600">{formatCurrency(statsData.topSponsors[0].amount)}</p>
+                    </div>
+                    <div className="w-24 h-32 bg-amber-50 rounded-t-2xl border-x border-t border-amber-100" />
+                  </div>
+                )}
+
+                {/* Bronze - 3rd */}
+                {statsData.topSponsors[2] && (
+                  <div className="flex flex-col items-center gap-3 order-3">
+                    <div className="w-14 h-14 rounded-2xl bg-orange-50 flex items-center justify-center border-2 border-orange-100 relative">
+                       <span className="text-xl font-black text-orange-400">3</span>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-black text-bento-text-main truncate w-24">
+                        {statsData.topSponsors[2].member?.name}
+                      </p>
+                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[2].amount)}</p>
+                    </div>
+                    <div className="w-20 h-16 bg-orange-50/50 rounded-t-xl" />
+                  </div>
+                )}
+
+                {statsData.topSponsors.length === 0 && (
+                   <div className="text-center py-12 w-full text-slate-300">
+                     <Medal className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                     <p className="font-bold text-xs uppercase tracking-widest leading-relaxed">Zatím nikdo nic nezaplatil.<br/>Pokladna zeje prázdnotou.</p>
+                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeStatView === 'debtors' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-lg font-black text-rose-600">Top 3 Největší dlužníci</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Tyto členové mají v kapse největší díry (neuhrané pokuty)</p>
+                </div>
+                <TrendingDownIcon className="w-6 h-6 text-rose-500" />
+              </div>
+
+              <div className="space-y-3 pt-4">
+                {statsData.topDebtors.map((debtor, idx) => (
+                  <div key={idx} className="flex items-center gap-4 bg-rose-50/30 p-4 rounded-2xl border border-rose-100/50 group hover:bg-rose-50 transition-all">
+                    <div className={cn(
+                      "w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm",
+                      idx === 0 ? "bg-rose-500 text-white" : "bg-rose-100 text-rose-600"
+                    )}>
+                      {idx + 1}.
+                    </div>
+                    <div className="flex-1">
+                      <h5 className="font-black text-bento-text-main">{debtor.member?.name}</h5>
+                      <div className="w-full h-1.5 bg-rose-100 rounded-full mt-1.5 overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${(debtor.amount / (statsData.topDebtors[0]?.amount || 1)) * 100}%` }}
+                          className="h-full bg-rose-500" 
+                        />
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-black text-rose-600">{formatCurrency(debtor.amount)}</p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Aktuální dluh</p>
+                    </div>
+                  </div>
+                ))}
+                
+                {statsData.topDebtors.length === 0 && (
+                   <div className="text-center py-12 text-slate-300">
+                     <Trophy className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                     <p className="font-bold text-xs uppercase tracking-widest">Wow! Nikdo nedluží ani korunu.</p>
+                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeStatView === 'violations' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={statsData.violationChartData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={65}
+                      outerRadius={85}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      {statsData.violationChartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'][index % 5]} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-lg font-black text-indigo-600 uppercase tracking-tight">Katalog hříchů</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Za co se u vás platí nejvíce?</p>
+                </div>
+                <div className="space-y-2">
+                  {statsData.violationChartData.map((item, idx) => (
+                    <div key={idx} className="flex justify-between items-center p-2 rounded-xl hover:bg-slate-50 transition-all">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'][idx % 5] }}></div>
+                        <span className="text-xs font-bold text-bento-text-main truncate max-w-[150px]">{item.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded uppercase">{item.value}x</span>
+                      </div>
+                    </div>
+                  ))}
+                  {statsData.violationChartData.length === 0 && (
+                     <p className="text-xs text-slate-300 italic py-4">Zatím nebyly zapsány žádné pokuty.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeStatView === 'monthly' && (
+            <div className="space-y-6">
+               <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-lg font-black text-indigo-700">Měsíční Králové</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Pořadí nejtvrdších měsíčních vládců</p>
+                </div>
+                <CalendarDays className="w-6 h-6 text-indigo-500" />
+              </div>
+
+              {statsData.lastMonthLeader && (
+                <div className="bg-indigo-600 rounded-3xl p-5 text-white flex items-center justify-between shadow-lg shadow-indigo-100">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/30">
+                      <CalendarDays className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <span className="text-[9px] font-black text-indigo-200 uppercase tracking-widest block mb-0.5">Naposledy vyhodnoceno</span>
+                      <h5 className="text-base font-black truncate">{new Date(statsData.lastMonthLeader.month).toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })}</h5>
+                      <p className="text-[10px] font-bold text-indigo-100/70">{statsData.lastMonthLeader.member?.name} • {formatCurrency(statsData.lastMonthLeader.amount)}</p>
+                    </div>
+                  </div>
+                  <div className="text-center px-4 border-l border-white/20">
+                    <p className="text-2xl font-black">{statsData.lastMonthRank}.</p>
+                    <p className="text-[9px] font-bold text-indigo-200 uppercase tracking-widest">Místo</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {statsData.monthlyLeaderboard.map((lead, idx) => (
+                  <div key={idx} className="bg-white border border-slate-100 p-4 rounded-[2rem] flex items-center justify-between group hover:border-indigo-200 transition-all hover:shadow-md">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
+                        {idx + 1}.
+                      </div>
+                      <div>
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                          {new Date(lead.month).toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })}
+                        </span>
+                        <h5 className="text-sm font-black text-bento-text-main mt-0.5">{lead.member?.name}</h5>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-black text-indigo-600">{formatCurrency(lead.amount)}</div>
+                    </div>
+                  </div>
+                ))}
+                
+                {statsData.monthlyLeaderboard.length === 0 && (
+                   <div className="md:col-span-2 text-center py-12 text-slate-300 border-2 border-dashed border-slate-100 rounded-[2rem]">
+                     <CalendarDays className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                     <p className="font-bold text-[10px] uppercase tracking-widest">Zatím chybí data pro měsíční přehled.</p>
+                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeStatView === 'streaks' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-lg font-black text-emerald-600">Nedotknutelní</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Hráči s nejdelšími řadami bez pokuty v tomto období</p>
+                </div>
+                <Flame className="w-6 h-6 text-orange-500" />
+              </div>
+
+              {statsData.overallChampion && (
+                <div className="relative overflow-hidden bg-gradient-to-br from-emerald-600 to-teal-700 p-6 rounded-3xl text-white shadow-xl shadow-emerald-200/50">
+                  <div className="absolute top-0 right-0 -mr-8 -mt-8 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
+                  <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="flex items-center gap-5">
+                      <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/30 shadow-inner">
+                        <Trophy className="w-8 h-8 text-yellow-300" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="px-2 py-0.5 bg-yellow-400 text-emerald-900 rounded-full font-black text-[8px] uppercase tracking-wider">Král discipliny</span>
+                        </div>
+                        <h5 className="text-xl font-black">{statsData.overallChampion.member.name}</h5>
+                        <p className="text-emerald-100/80 text-[10px] font-bold uppercase tracking-widest mt-0.5">Historicky nejdelší série i nyní</p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-4 md:gap-8 items-center border-t md:border-t-0 md:border-l border-white/20 pt-4 md:pt-0 md:pl-8">
+                      <div className="text-center">
+                        <p className="text-2xl font-black text-white">{statsData.overallChampion.bestStreakDays}</p>
+                        <p className="text-[9px] font-bold text-emerald-200/60 uppercase tracking-widest">Osobní rekord</p>
+                      </div>
+                      <div className="w-[1px] h-8 bg-white/20"></div>
+                      <div className="text-center">
+                        <p className="text-2xl font-black text-yellow-300">{statsData.overallChampion.currentStreakDays}</p>
+                        <p className="text-[9px] font-bold text-yellow-200/60 uppercase tracking-widest">Aktivní série</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {statsData.streaks
+                  .filter(s => s.member.id !== statsData.overallChampion?.member.id)
+                  .map((streak, idx) => (
+                  <div key={idx} className="flex flex-col gap-3 bg-white p-5 rounded-2xl border border-slate-100 hover:shadow-lg hover:shadow-slate-100/50 transition-all group">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100 group-hover:bg-emerald-50 transition-colors">
+                          <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                        </div>
+                        <div>
+                          <h5 className="text-sm font-black text-bento-text-main truncate max-w-[120px]">{streak.member.name}</h5>
+                          <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">Pořadí #{idx + 2}</span>
+                        </div>
+                      </div>
+                      {streak.currentStreakDays >= streak.bestStreakDays && streak.currentStreakDays > 0 && (
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Vytváří nový rekord"></div>
+                      )}
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                       <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100/50">
+                         <p className="text-xs font-black text-slate-600">{streak.currentStreakDays}</p>
+                         <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Aktuální</p>
+                       </div>
+                       <div className="bg-emerald-50/30 p-2.5 rounded-xl border border-emerald-100/30">
+                         <p className="text-xs font-black text-emerald-600">{streak.bestStreakDays}</p>
+                         <p className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest">Nejlepší</p>
+                       </div>
+                    </div>
+                  </div>
+                ))}
+                
+                {statsData.streaks.length === 0 && (
+                   <p className="md:col-span-3 text-center text-slate-300 italic py-8">Žádní aktivní členové k vyhodnocení.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </motion.div>
+
+        <p className="mt-4 text-[9px] font-bold text-slate-300 uppercase tracking-[0.2em] text-center">
+           Data jsou aktuální pro probíhající období "{currentPeriod.name}"
+        </p>
+      </div>
+
+      {/* Statistics Reset Confirmation Modal */}
+      <AnimatePresence>
+        {resetConfirm && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[120]">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[2rem] p-6 max-w-sm w-full shadow-2xl border border-rose-100"
+            >
+              <div className="w-12 h-12 bg-rose-50 rounded-2xl flex items-center justify-center mb-4">
+                <RotateCcw className="w-6 h-6 text-rose-500" />
+              </div>
+              <h3 className="text-xl font-black text-slate-900 mb-2">Anulovat statistiku?</h3>
+              <p className="text-sm text-slate-500 leading-relaxed mb-6">
+                Opravdu chcete vyčistit vhled <span className="font-bold text-slate-900">"{resetConfirm.name}"</span>? 
+                Historické záznamy zůstanou zachovány, ale statistika se začne počítat od nuly ode dneška.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setResetConfirm(null)}
+                  className="flex-1 px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-200 transition-all"
+                >
+                  Zrušit
+                </button>
+                <button
+                  onClick={confirmReset}
+                  className="flex-1 px-4 py-3 bg-rose-500 text-white rounded-xl font-black text-xs uppercase tracking-widest transition-all shadow-lg shadow-rose-200"
+                >
+                  Anulovat
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Quick Actions */}
+      <div className="pt-4">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
+          <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Rychlé akce</h3>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <QuickAction
+            label="Zapsat pokutu"
+            icon={ReceiptText}
+            onClick={() => onOpenQuickAction('fine')}
+            color="hover:border-bento-accent/30 hover:bg-slate-50"
+            iconColor="bg-slate-100 text-bento-text-main"
+          />
+          <QuickAction
+            label="Zapsat platbu"
+            icon={CreditCard}
+            onClick={() => onOpenQuickAction('payment')}
+            color="hover:border-emerald-200 hover:bg-emerald-50/30"
+            iconColor="bg-slate-100 text-bento-text-main"
+          />
+          <QuickAction
+            label="Zapsat výdaj"
+            icon={TrendingDown}
+            onClick={() => onOpenQuickAction('expense')}
+            color="hover:border-rose-200 hover:bg-rose-50/30"
+            iconColor="bg-slate-100 text-bento-text-main"
+          />
+          <QuickAction
+            label="Zapsat příjem"
+            icon={TrendingUp}
+            onClick={() => onOpenQuickAction('income')}
+            color="hover:border-emerald-200 hover:bg-emerald-50/30"
+            iconColor="bg-slate-100 text-bento-text-main"
+          />
+        </div>
+      </div>
+      {/* Category Detail Modal */}
+      <AnimatePresence>
+        {selectedCategoryTrans && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[100]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-[2.5rem] p-6 md:p-8 max-w-md w-full shadow-2xl border border-bento-card-border"
+            >
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h2 className="text-2xl font-black text-bento-text-main tracking-tight">{selectedCategoryTrans.name}</h2>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-accent mt-1">Detailní výpis transakcí</p>
+                </div>
+                <button 
+                  onClick={() => setSelectedCategoryTrans(null)}
+                  className="p-2.5 bg-slate-50 text-bento-text-muted hover:bg-slate-100 rounded-2xl transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                {selectedCategoryTrans.transactions.length > 0 ? (
+                  selectedCategoryTrans.transactions.map((t, idx) => (
+                    <div key={idx} className="flex justify-between items-center p-4 bg-slate-50 border border-slate-100 rounded-2xl hover:bg-white hover:border-bento-accent/20 transition-all group">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] font-black text-bento-accent">{(t.fromWho || 'Neznámý').toUpperCase()}</span>
+                          <span className="text-[10px] font-bold text-slate-300">•</span>
+                          <span className="text-[9px] font-bold text-slate-400">{formatDate(t.createdAt)}</span>
+                        </div>
+                        <span className="text-xs font-bold text-bento-text-main leading-tight">{t.note}</span>
+                      </div>
+                      <span className={cn(
+                        "text-sm font-black tracking-tighter shrink-0 ml-4",
+                        t.amount > 0 ? "text-emerald-600" : "text-rose-600"
+                      )}>
+                        {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount)}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-16 text-slate-300">
+                    <ReceiptText className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                    <p className="font-bold text-xs uppercase tracking-widest">Žádné transakce</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-6 pt-6 border-t border-bento-card-border flex justify-between items-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted">Celkem</span>
+                <span className={cn(
+                  "text-xl font-black tracking-tighter",
+                  selectedCategoryTrans.transactions.reduce((s, t) => s + t.amount, 0) > 0 ? "text-emerald-600" : "text-rose-600"
+                )}>
+                  {formatCurrency(selectedCategoryTrans.transactions.reduce((s, t) => s + t.amount, 0))}
+                </span>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Calendar Modal */}
+      <AnimatePresence>
+        {isCalendarModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[110]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-[2.5rem] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl border border-bento-card-border"
+            >
+              <div className="p-6 md:p-8 flex items-center justify-between border-b border-bento-card-border bg-slate-50">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-bento-accent/10 rounded-2xl flex items-center justify-center">
+                    <CalendarIcon className="w-6 h-6 text-bento-accent" />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-black text-bento-text-main tracking-tight">Kalendář událostí</h2>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-accent mt-1">Přehled plánovaných akcí</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => onNavigate('settings')}
+                    className="flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-bento-text-muted hover:text-bento-accent bg-white rounded-xl border border-bento-card-border transition-all"
+                  >
+                    Správa v nastavení <ExternalLink className="w-3 h-3" />
+                  </button>
+                  <button 
+                    onClick={() => setIsCalendarModalOpen(false)}
+                    className="p-2.5 bg-white text-bento-text-muted hover:bg-slate-100 rounded-2xl border border-bento-card-border transition-all"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Calendar View */}
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-black uppercase tracking-widest text-bento-text-main">
+                        {calendarDate.toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })}
+                      </h3>
+                      <div className="flex gap-1">
+                        <button 
+                          onClick={() => setCalendarDate(new Date(calendarDate.setMonth(calendarDate.getMonth() - 1)))}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-bento-text-muted transition-all"
+                        >
+                          <ChevronUp className="-rotate-90 w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => setCalendarDate(new Date())}
+                          className="px-2 text-[10px] font-black uppercase tracking-widest text-bento-accent hover:bg-bento-accent/5 rounded-lg transition-all"
+                        >
+                          Dnes
+                        </button>
+                        <button 
+                          onClick={() => setCalendarDate(new Date(calendarDate.setMonth(calendarDate.getMonth() + 1)))}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-bento-text-muted transition-all"
+                        >
+                          <ChevronUp className="rotate-90 w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-1">
+                      {['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'].map(day => (
+                        <div key={day} className="text-center py-2 text-[10px] font-black text-bento-text-muted uppercase tracking-widest">
+                          {day}
+                        </div>
+                      ))}
+                      {(() => {
+                        const days = [];
+                        const firstDayOfMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1);
+                        const lastDayOfMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 0);
+                        
+                        // Adjust for Monday start
+                        let startDay = firstDayOfMonth.getDay() - 1;
+                        if (startDay === -1) startDay = 6;
+
+                        // Empty days before
+                        for (let i = 0; i < startDay; i++) {
+                          days.push(<div key={`empty-${i}`} className="h-12" />);
+                        }
+
+                        // Get all calendar items for the viewed year/month
+                        const calendarItems = [
+                          ...events,
+                          ...birthdayEvents.map(b => {
+                            const bDate = new Date(b.member.birthDate!);
+                            const year = calendarDate.getFullYear();
+                            const dateInCurrentYear = new Date(year, bDate.getMonth(), bDate.getDate()).toISOString().split('T')[0];
+                            return { ...b, date: dateInCurrentYear };
+                          })
+                        ];
+
+                        // Real days
+                        for (let d = 1; d <= lastDayOfMonth.getDate(); d++) {
+                          const dateStr = `${calendarDate.getFullYear()}-${String(calendarDate.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                          const dayEvents = calendarItems.filter(e => e.date === dateStr);
+                          const isToday = new Date().toISOString().split('T')[0] === dateStr;
+                          const hasImportant = dayEvents.some(e => (e as any).isImportant);
+                          const hasBirthday = dayEvents.some(e => (e as any).isBirthday);
+                          const hasEvent = dayEvents.length > 0;
+
+                          days.push(
+                            <div 
+                              key={d} 
+                              onClick={() => dayEvents.length > 0 && setSelectedEvent(dayEvents[0])}
+                              className={cn(
+                                "h-12 rounded-xl flex flex-col items-center justify-center relative cursor-pointer group transition-all",
+                                isToday ? "bg-bento-accent shadow-lg shadow-bento-accent/20" : "hover:bg-slate-50 border border-transparent hover:border-slate-100"
+                              )}
+                            >
+                              <span className={cn("text-[11px] font-bold", isToday ? "text-white" : "text-bento-text-main")}>{d}</span>
+                              <div className="flex gap-0.5 mt-1">
+                                {hasImportant && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-rose-500")} />}
+                                {hasBirthday && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-indigo-400")} />}
+                                {hasEvent && !hasImportant && !hasBirthday && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-bento-accent")} />}
+                              </div>
+
+                              {dayEvents.length > 1 && (
+                                <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-slate-900 border border-white rounded-full flex items-center justify-center text-[8px] font-black text-white">
+                                  {dayEvents.length}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+                        return days;
+                      })()}
+                    </div>
+
+                    <div className="flex flex-wrap gap-4 pt-4 border-t border-bento-card-border">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-rose-500" />
+                        <span className="text-[10px] font-bold text-bento-text-muted uppercase">Důležité</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-indigo-400" />
+                        <span className="text-[10px] font-bold text-bento-text-muted uppercase">Narozeniny</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-bento-accent" />
+                        <span className="text-[10px] font-bold text-bento-text-muted uppercase">Událost</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Event Detail List for the month */}
+                  <div className="lg:border-l lg:border-bento-card-border lg:pl-8 space-y-6">
+                    <h3 className="text-sm font-black uppercase tracking-widest text-bento-text-main">Události v měsíci</h3>
+                    <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                      {(() => {
+                        const monthStr = `${calendarDate.getFullYear()}-${String(calendarDate.getMonth() + 1).padStart(2, '0')}`;
+                        const monthItems = [
+                          ...events,
+                          ...birthdayEvents.map(b => {
+                            const bDate = new Date(b.member.birthDate!);
+                            const year = calendarDate.getFullYear();
+                            const dateInCurrentYear = new Date(year, bDate.getMonth(), bDate.getDate()).toISOString().split('T')[0];
+                            return { ...b, date: dateInCurrentYear };
+                          })
+                        ].filter(e => e.date.startsWith(monthStr))
+                         .sort((a, b) => a.date.localeCompare(b.date));
+
+                        if (monthItems.length === 0) {
+                          return (
+                            <div className="text-center py-12 opacity-20">
+                              <CalendarIcon className="w-10 h-10 mx-auto mb-2" />
+                              <p className="text-[10px] font-black uppercase tracking-widest">Žádné události</p>
+                            </div>
+                          );
+                        }
+
+                        return monthItems.map(item => (
+                          <div 
+                            key={item.id} 
+                            onClick={() => setSelectedEvent(item)}
+                            className={cn(
+                              "p-4 rounded-[1.5rem] border transition-all cursor-pointer group",
+                              (item as any).isImportant ? "bg-rose-50/50 border-rose-100 hover:border-rose-300" : 
+                              ((item as any).isBirthday ? "bg-indigo-50/50 border-indigo-100 hover:border-indigo-300" : "bg-slate-50 border-transparent hover:border-bento-card-border")
+                            )}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black text-slate-400">
+                                  {new Date(item.date).toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric' })}
+                                </span>
+                                {(item as any).isImportant && (
+                                  <span className="text-[8px] font-black uppercase tracking-widest text-rose-500 bg-rose-100 px-1.5 py-0.5 rounded">Důležité</span>
+                                )}
+                                {(item as any).isBirthday && (
+                                  <span className="text-[8px] font-black uppercase tracking-widest text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded">Narozeniny</span>
+                                )}
+                              </div>
+                              <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:translate-x-1 transition-transform" />
+                            </div>
+                            <p className="text-xs font-black text-bento-text-main line-clamp-1">{item.name}</p>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Goal Management Modal */}
+      <AnimatePresence>
+        {isGoalModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[130]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-bento-card-border"
+            >
+              <div className="p-6 md:p-8 flex items-center justify-between border-b border-bento-card-border bg-slate-50">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center">
+                    <Target className="w-6 h-6 text-indigo-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-black text-bento-text-main tracking-tight">Správa cílů</h2>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500 mt-1">Nastavte na co šetříte</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsGoalModalOpen(false)}
+                  className="p-2.5 bg-white text-bento-text-muted hover:bg-slate-100 rounded-2xl border border-bento-card-border transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-8 flex-1 overflow-y-auto custom-scrollbar max-h-[60vh]">
+                <div className="space-y-6">
+                  {/* Add New Goal */}
+                  <div className="bg-slate-50 rounded-[2rem] p-6 border border-slate-100 space-y-4">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted mb-2">Nový cíl</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Název cíle</label>
+                        <input
+                          type="text"
+                          placeholder="Napr. Nové dresy, Grill párty..."
+                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                          value={newGoalName}
+                          onChange={(e) => setNewGoalName(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Cílová částka (Kč)</label>
+                        <input
+                          type="number"
+                          placeholder="0"
+                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                          value={newGoalAmount}
+                          onChange={(e) => setNewGoalAmount(e.target.value)}
+                        />
+                      </div>
+                      <button
+                        onClick={handleAddGoal}
+                        disabled={!newGoalName || !newGoalAmount}
+                        className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
+                      >
+                        <PlusCircle className="w-4 h-4" />
+                        Přidat cíl
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Goal List */}
+                  <div className="space-y-4">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted ml-1">Vaše cíle (přetažením seřaďte)</h3>
+                    {goals.length > 0 ? (
+                      <Reorder.Group axis="y" values={goals} onReorder={handleReorderGoals} className="space-y-2">
+                        {goals.map((goal) => (
+                          <Reorder.Item 
+                            key={goal.id} 
+                            value={goal}
+                            className={cn(
+                              "bg-white border p-4 rounded-2xl flex items-center gap-3 transition-all",
+                              goal.completed ? "border-emerald-100 bg-emerald-50/10" : "border-slate-100"
+                            )}
+                          >
+                            <div className="cursor-grab active:cursor-grabbing p-1">
+                              <GripVertical className="w-4 h-4 text-slate-300" />
+                            </div>
+                            <button
+                              onClick={() => handleToggleGoal(goal)}
+                              className={cn(
+                                "w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all",
+                                goal.completed ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200"
+                              )}
+                            >
+                              {goal.completed && <Trophy className="w-3 h-3" />}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <h4 className={cn("text-sm font-black truncate leading-tight", goal.completed ? "text-emerald-700 line-through opacity-50" : "text-bento-text-main")}>
+                                {goal.name}
+                              </h4>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                {formatCurrency(goal.targetAmount)}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => handleDeleteGoal(goal.id)}
+                              className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </Reorder.Item>
+                        ))}
+                      </Reorder.Group>
+                    ) : (
+                      <div className="text-center py-12 bg-slate-50 rounded-[2rem] border border-dashed border-slate-200">
+                        <Target className="w-8 h-8 mx-auto mb-2 text-slate-200" />
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">Žádné cíle nejsou nastaveny</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-6 bg-slate-50 border-t border-bento-card-border text-center">
+                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                   Na dashboardu se vždy zobrazuje první nedokončený cíl v seznamu.
+                 </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Selected Event Detail Modal */}
+      <AnimatePresence>
+        {selectedEvent && (
+          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 z-[120]">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[2.5rem] w-full max-w-md shadow-2xl overflow-hidden"
+            >
+              <div className={cn(
+                "p-8 text-white relative overflow-hidden",
+                selectedEvent.isBirthday ? "bg-indigo-500" : (selectedEvent.isImportant ? "bg-rose-500" : "bg-bento-sidebar")
+              )}>
+                <div className="flex justify-between items-start z-10 relative">
+                  <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
+                    {selectedEvent.isBirthday ? <Cake className="w-6 h-6" /> : <CalendarIcon className="w-6 h-6" />}
+                  </div>
+                  <button 
+                    onClick={() => setSelectedEvent(null)}
+                    className="p-2 hover:bg-white/10 rounded-xl transition-all"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                
+                <div className="mt-6 z-10 relative">
+                  <h3 className="text-2xl font-black tracking-tight">{selectedEvent.isBirthday ? `Oslava: ${selectedEvent.originalName}` : selectedEvent.name}</h3>
+                  <div className="flex items-center gap-2 mt-2 text-white/70">
+                    <CalendarIcon className="w-4 h-4" />
+                    <span className="text-xs font-bold">
+                      {new Date(selectedEvent.date).toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="absolute right-[-10%] bottom-[-20%] w-48 h-48 bg-white/10 rounded-full blur-3xl" />
+              </div>
+
+              <div className="p-8">
+                <div className="space-y-6">
+                  {selectedEvent.description ? (
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Popis události</label>
+                      <div className="p-4 bg-slate-50 rounded-2xl border border-bento-card-border/50 text-sm font-medium text-bento-text-main leading-relaxed">
+                        {selectedEvent.description}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-6 text-center text-slate-300 italic text-sm">
+                      Žádný dodatečný popis k této události.
+                    </div>
+                  )}
+
+                  {selectedEvent.isBirthday && (
+                    <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center gap-4">
+                      <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center shrink-0">
+                        <Cake className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-indigo-900">Kulaté jubileum</p>
+                        <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Slaví {selectedEvent.age}. narozeniny</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2">
+                    <button 
+                      onClick={() => {
+                        setSelectedEvent(null);
+                        setIsCalendarModalOpen(false);
+                        onNavigate('settings');
+                      }}
+                      className="w-full py-4 bg-slate-900 hover:bg-black text-white rounded-2xl font-black uppercase text-xs tracking-[0.2em] transition-all flex items-center justify-center gap-2 group"
+                    >
+                      Upravit v nastavení
+                      <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function QuickAction({ label, icon: Icon, onClick, color, iconColor }: any) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-center justify-center gap-3 p-6 bg-white border border-bento-card-border rounded-2xl transition-all active:scale-95 group",
+        color
+      )}
+    >
+      <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center transition-all group-hover:scale-110", iconColor)}>
+        <Icon className="w-5 h-5" />
+      </div>
+      <span className="font-bold text-xs text-bento-text-main tracking-tight">{label}</span>
+    </button>
+  );
+}
+
+function StatTab({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: any; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-[9px] uppercase tracking-widest transition-all whitespace-nowrap",
+        active ? "bg-white text-indigo-600 shadow-sm border border-slate-200" : "text-bento-text-muted hover:text-bento-text-main"
+      )}
+    >
+      <Icon className={cn("w-3.5 h-3.5", active ? "text-indigo-600" : "text-slate-400")} />
+      {label}
+    </button>
+  );
+}
+

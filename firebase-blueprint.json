@@ -1,0 +1,189 @@
+{
+  "entities": {
+    "Group": {
+      "title": "Group",
+      "description": "A team or collection of people managing a shared cashbox.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["name", "ownerId"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "A member (player) of a specific group.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "active": { "type": "boolean" },
+        "groupId": { "type": "string" },
+        "birthDate": { "type": "string", "description": "Birth date in YYYY-MM-DD format" }
+      },
+      "required": ["name", "active", "groupId"]
+    },
+    "FineTemplate": {
+      "title": "FineTemplate",
+      "description": "A predefined fine definition in the group's rulebook.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "enum": ["fixed", "dynamic"] },
+        "unit": { "type": "string" },
+        "groupId": { "type": "string" }
+      },
+      "required": ["name", "amount", "type", "groupId"]
+    },
+    "Period": {
+      "title": "Period",
+      "description": "A specific time interval (e.g. Season 2024) within a group.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "groupId": { "type": "string" },
+        "createdAt": { "format": "date-time", "type": "string" },
+        "statsResetAt": { "type": "number" },
+        "violationsResetAt": { "type": "number" },
+        "streaksResetAt": { "type": "number" },
+        "sponsorsResetAt": { "type": "number" },
+        "monthlyResetAt": { "type": "number" },
+        "debtorsResetAt": { "type": "number" },
+        "resetDebtTrendAt": { "type": "number" }
+      },
+      "required": ["name", "groupId", "createdAt"]
+    },
+    "Fine": {
+      "title": "Fine",
+      "description": "A specific fine assigned to a member.",
+      "type": "object",
+      "properties": {
+        "memberId": { "type": "string" },
+        "reason": { "type": "string" },
+        "amount": { "type": "number" },
+        "paidAmount": { "type": "number", "description": "How much has been paid towards this fine." },
+        "paid": { "type": "boolean" },
+        "periodId": { "type": "string" },
+        "createdAt": { "format": "date-time", "type": "string" }
+      },
+      "required": ["memberId", "reason", "amount", "paid", "periodId", "createdAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A payment made by a member to settle their fines.",
+      "type": "object",
+      "properties": {
+        "memberId": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentMethod": { "enum": ["cash", "bank"] },
+        "note": { "type": "string" },
+        "periodId": { "type": "string" },
+        "createdAt": { "format": "date-time", "type": "string" },
+        "transactionId": { "type": "string", "description": "Linked cashbox transaction ID" }
+      },
+      "required": ["memberId", "amount", "paymentMethod", "periodId", "createdAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Any financial movement (income/expense) within a period.",
+      "type": "object",
+      "properties": {
+        "amount": { "type": "number", "description": "Positive for income, negative for expense." },
+        "type": { "enum": ["income", "expense"] },
+        "source": { "enum": ["fine_payment", "external_income", "expense"] },
+        "note": { "type": "string" },
+        "periodId": { "type": "string" },
+        "createdAt": { "format": "date-time", "type": "string" },
+        "fromWho": { "type": "string" },
+        "paymentId": { "type": "string", "description": "Linked member payment ID" }
+      },
+      "required": ["amount", "type", "source", "periodId", "createdAt"]
+    },
+    "MemberGroup": {
+      "title": "MemberGroup",
+      "description": "A sub-group of members (e.g. Defense, Goalies) for quick fine recording.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "memberIds": { 
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "groupId": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["name", "memberIds", "groupId"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "An event or occurrence scheduled within a period.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "date": { "type": "string", "description": "Date in YYYY-MM-DD format" },
+        "description": { "type": "string" },
+        "isImportant": { "type": "boolean" },
+        "groupId": { "type": "string" },
+        "periodId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "date", "isImportant", "groupId", "periodId", "createdAt"]
+    },
+    "Goal": {
+      "title": "Goal",
+      "description": "A financial goal (saving for something) within a period.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "targetAmount": { "type": "number" },
+        "priority": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "completed": { "type": "boolean" },
+        "periodId": { "type": "string" }
+      },
+      "required": ["name", "targetAmount", "priority", "createdAt", "completed", "periodId"]
+    }
+  },
+  "firestore": {
+    "/groups/{groupId}": {
+      "schema": "Group",
+      "description": "Top-level team/group folders."
+    },
+    "/groups/{groupId}/periods/{periodId}/members/{memberId}": {
+      "schema": "Member",
+      "description": "Members belonging to a specific period in a group."
+    },
+    "/groups/{groupId}/periods/{periodId}/memberGroups/{mgId}": {
+      "schema": "MemberGroup",
+      "description": "Sub-groups for easier batch management."
+    },
+    "/groups/{groupId}/periods/{periodId}/fineTemplates/{templateId}": {
+      "schema": "FineTemplate",
+      "description": "Ruleset for fines in a specific period."
+    },
+    "/groups/{groupId}/periods/{periodId}": {
+      "schema": "Period",
+      "description": "Time-based periods within a group."
+    },
+    "/groups/{groupId}/periods/{periodId}/fines/{fineId}": {
+      "schema": "Fine",
+      "description": "Individual fines recorded in a period."
+    },
+    "/groups/{groupId}/periods/{periodId}/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Payment records in a period."
+    },
+    "/groups/{groupId}/periods/{periodId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Financial ledger for a period."
+    },
+    "/groups/{groupId}/periods/{periodId}/events/{eventId}": {
+      "schema": "Event",
+      "description": "Events and meetings scheduled for the group."
+    },
+    "/groups/{groupId}/periods/{periodId}/goals/{goalId}": {
+      "schema": "Goal",
+      "description": "Financial goals for the period."
+    }
+  }
+}

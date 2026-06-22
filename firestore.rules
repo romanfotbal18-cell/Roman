@@ -1,0 +1,151 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isGroupOwner(gId) {
+      return isSignedIn() && get(/databases/$(database)/documents/groups/$(gId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Groups ---
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && isOwner(existing().ownerId);
+      allow create: if isSignedIn() && isOwner(incoming().ownerId) 
+                    && incoming().name is string && incoming().name.size() <= 100;
+      allow update: if isSignedIn() && isOwner(existing().ownerId) 
+                    && incoming().ownerId == existing().ownerId
+                    && incoming().name is string && incoming().name.size() <= 100;
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+
+      // --- Periods ---
+      match /periods/{periodId} {
+        allow read: if isGroupOwner(groupId);
+        allow create: if isGroupOwner(groupId)
+                      && incoming().name is string && incoming().name.size() <= 100
+                      && incoming().groupId == groupId;
+        allow update: if isGroupOwner(groupId)
+                      && incoming().groupId == groupId;
+        allow delete: if isGroupOwner(groupId);
+
+        // --- Members ---
+        match /members/{memberId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().groupId == groupId;
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Member Groups ---
+        match /memberGroups/{mgId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().memberIds is list
+                        && incoming().groupId == groupId;
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Fine Templates ---
+        match /fineTemplates/{templateId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().amount is number
+                        && incoming().groupId == groupId;
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Fines ---
+        match /fines/{fineId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().amount is number
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Payments ---
+        match /payments/{paymentId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().amount is number
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Transactions ---
+        match /transactions/{transactionId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().amount is number
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow update: if isGroupOwner(groupId)
+                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Events ---
+        match /events/{eventId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().date is string
+                        && incoming().groupId == groupId
+                        && incoming().periodId == periodId;
+          allow update: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().date is string;
+          allow delete: if isGroupOwner(groupId);
+        }
+
+        // --- Goals ---
+        match /goals/{goalId} {
+          allow read: if isGroupOwner(groupId);
+          allow create: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().targetAmount is number
+                        && incoming().periodId == periodId;
+          allow update: if isGroupOwner(groupId)
+                        && incoming().name is string && incoming().name.size() <= 100
+                        && incoming().targetAmount is number;
+          allow delete: if isGroupOwner(groupId);
+        }
+      }
+    }
+  }
+}
