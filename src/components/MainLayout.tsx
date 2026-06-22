@@ -8,6 +8,7 @@ import CashboxManagement from './CashboxManagement';
 import ManualTransactionForm from './ManualTransactionForm';
 import QuickPayment from './QuickPayment';
 import Settings from './Settings';
+import ThemeToggle from './ThemeToggle';
 import { 
   LayoutDashboard, 
   Users, 
@@ -113,6 +114,8 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
                 </button>
               ))}
             </div>
+            
+            <ThemeToggle />
             
             <button 
               className="md:hidden p-2.5 bg-bento-sidebar text-white rounded-xl active:scale-95 transition-all"

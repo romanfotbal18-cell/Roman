@@ -5,6 +5,7 @@ import { Group, Period, OperationType } from '../types';
 import { handleFirestoreError, cn } from '../utils';
 import { Plus, Trash2, Edit2, ArrowLeft, Calendar, Loader2, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ThemeToggle from './ThemeToggle';
 
 interface PeriodSelectorProps {
   group: Group;
@@ -161,15 +162,18 @@ export default function PeriodSelector({ group, onSelect, onBack }: PeriodSelect
             </div>
           </div>
 
-          <button
-            onClick={() => setIsAdding(true)}
-            className="group flex items-center gap-3 bg-bento-accent text-white px-6 py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-bento-accent/20 active:scale-95"
-          >
-            <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
-              <Plus className="w-4 h-4" />
-            </div>
-            Vytvořit období
-          </button>
+          <div className="flex items-center gap-4">
+            <ThemeToggle />
+            <button
+              onClick={() => setIsAdding(true)}
+              className="group flex items-center gap-3 bg-bento-accent text-white px-6 py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-bento-accent/20 active:scale-95"
+            >
+              <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+                <Plus className="w-4 h-4" />
+              </div>
+              Vytvořit období
+            </button>
+          </div>
         </div>
 
         {loading ? (

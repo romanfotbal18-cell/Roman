@@ -5,6 +5,7 @@ import { Group, OperationType } from '../types';
 import { handleFirestoreError, cn } from '../utils';
 import { Plus, Trash2, Edit2, LogOut, Folder, Loader2, AlertTriangle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ThemeToggle from './ThemeToggle';
 
 interface GroupSelectorProps {
   onSelect: (group: Group) => void;
@@ -90,6 +91,7 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
             <p className="text-bento-text-muted text-base max-w-sm">Vyberte skupinu nebo tým pro správu pokladny.</p>
           </div>
           <div className="flex items-center gap-4">
+            <ThemeToggle />
             <button
               onClick={() => setIsAdding(true)}
               className="group flex items-center gap-3 bg-bento-accent text-white px-6 py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-bento-accent/20 active:scale-95"

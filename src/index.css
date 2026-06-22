@@ -4,27 +4,117 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   
-  --color-bento-bg: #F8FAFC;
-  --color-bento-sidebar: #1E293B;
-  --color-bento-sidebar-text: #F1F5F9;
-  --color-bento-sidebar-muted: #94A3B8;
-  --color-bento-accent: #38BDF8;
-  --color-bento-card-border: #E2E8F0;
-  --color-bento-text-main: #0F172A;
-  --color-bento-text-muted: #64748B;
-  --color-bento-success: #10B981;
-  --color-bento-error: #EF4444;
+  --color-bento-bg: var(--bento-bg);
+  --color-bento-sidebar: var(--bento-sidebar);
+  --color-bento-sidebar-text: var(--bento-sidebar-text);
+  --color-bento-sidebar-muted: var(--bento-sidebar-muted);
+  --color-bento-accent: var(--bento-accent);
+  --color-bento-card-border: var(--bento-card-border);
+  --color-bento-text-main: var(--bento-text-main);
+  --color-bento-text-muted: var(--bento-text-muted);
+  --color-bento-success: var(--bento-success);
+  --color-bento-error: var(--bento-error);
+  --color-bento-card-bg: var(--bento-card-bg);
+}
+
+:root {
+  --bento-bg: #F8FAFC;
+  --bento-sidebar: #1E293B;
+  --bento-sidebar-text: #F1F5F9;
+  --bento-sidebar-muted: #94A3B8;
+  --bento-accent: #38BDF8;
+  --bento-card-border: #E2E8F0;
+  --bento-text-main: #0F172A;
+  --bento-text-muted: #64748B;
+  --bento-success: #10B981;
+  --bento-error: #EF4444;
+  --bento-card-bg: #ffffff;
+}
+
+.dark {
+  --bento-bg: #0B0F19; /* premium cosmic dark navy */
+  --bento-sidebar: #111827; /* slate-900 */
+  --bento-sidebar-text: #F9FAFB;
+  --bento-sidebar-muted: #6B7280;
+  --bento-accent: #0EA5E9; /* sky blue */
+  --bento-card-border: #1F2937; /* slate-800 */
+  --bento-text-main: #F3F4F6; /* slate-100 */
+  --bento-text-muted: #9CA3AF; /* slate-400 */
+  --bento-success: #10B981;
+  --bento-error: #F87171;
+  --bento-card-bg: #111827; /* slate-900 */
+  color-scheme: dark;
 }
 
 @layer base {
   body {
-    @apply bg-bento-bg text-bento-text-main font-sans;
+    @apply bg-bento-bg text-bento-text-main font-sans transition-colors duration-200;
   }
+}
+
+/* Global Dark Mode Helper Overrides for standard utility classes */
+.dark .bg-white {
+  background-color: #111827 !important; /* matches bento-card-bg */
+}
+
+.dark .bg-slate-50 {
+  background-color: #0B0F19 !important; /* matches bento-bg */
+}
+
+.dark .bg-slate-100 {
+  background-color: #1F2937 !important; /* slate-800 background for selectors */
+}
+
+.dark .bg-slate-50\/50 {
+  background-color: rgba(11, 15, 25, 0.5) !important;
+}
+
+.dark .bg-slate-100\/50 {
+  background-color: rgba(31, 41, 55, 0.5) !important;
+}
+
+.dark .text-slate-900 {
+  color: #F3F4F6 !important;
+}
+
+.dark .text-slate-800, .dark .text-slate-700 {
+  color: #E5E7EB !important;
+}
+
+.dark .text-slate-600 {
+  color: #9CA3AF !important;
+}
+
+.dark .text-slate-500, .dark .text-slate-400 {
+  color: #6B7280 !important;
+}
+
+.dark .border-slate-100, .dark .border-slate-200 {
+  border-color: #1F2937 !important;
+}
+
+.dark .hover:bg-slate-50:hover {
+  background-color: #1F2937 !important;
+}
+
+.dark .hover:bg-slate-100:hover {
+  background-color: #374151 !important;
+}
+
+.dark select, .dark input, .dark textarea {
+  background-color: #111827 !important;
+  color: #F3F4F6 !important;
+  border-color: #1F2937 !important;
+}
+
+.dark select option {
+  background-color: #111827 !important;
+  color: #F3F4F6 !important;
 }
 
 @layer components {
   .bento-card {
-    @apply bg-white rounded-2xl border border-bento-card-border shadow-sm p-5 flex flex-col transition-all;
+    @apply bg-bento-card-bg rounded-2xl border border-bento-card-border shadow-sm p-5 flex flex-col transition-all duration-200;
   }
   
   .stat-title {
@@ -40,6 +130,7 @@
   }
   
   .btn-bento-secondary {
-    @apply bg-[#F1F5F9] text-[#475569] font-bold py-2.5 px-4 rounded-xl hover:bg-slate-200 transition-all flex items-center justify-center gap-2;
+    @apply bg-[#F1F5F9] dark:bg-slate-800 text-[#475569] dark:text-slate-300 font-bold py-2.5 px-4 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-2;
   }
 }
+
