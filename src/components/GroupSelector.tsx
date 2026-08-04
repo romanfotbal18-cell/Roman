@@ -22,6 +22,8 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
   const [editName, setEditName] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sharingGroup, setSharingGroup] = useState<Group | null>(null);
+  const [leavingGroup, setLeavingGroup] = useState<Group | null>(null);
+  const [isLeavingLoading, setIsLeavingLoading] = useState(false);
 
   // Join modal state
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
@@ -180,6 +182,38 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
     }
   };
 
+  const handleConfirmLeaveGroup = async () => {
+    if (!leavingGroup || !auth.currentUser) return;
+    const user = auth.currentUser;
+    const userEmail = (user.email || '').toLowerCase();
+    const gId = leavingGroup.id;
+
+    setIsLeavingLoading(true);
+    try {
+      const updatedShared = (leavingGroup.sharedUsers || []).filter(u => u.email.toLowerCase() !== userEmail && u.uid !== user.uid);
+      const updatedAllowedEmails = (leavingGroup.allowedEmails || []).filter(e => e.toLowerCase() !== userEmail);
+      const updatedMemberUids = (leavingGroup.memberUids || []).filter(uid => uid !== user.uid);
+
+      await updateDoc(doc(db, 'groups', gId), {
+        sharedUsers: updatedShared,
+        allowedEmails: updatedAllowedEmails,
+        memberUids: updatedMemberUids
+      });
+
+      setGroupsMap(prev => {
+        const next = { ...prev };
+        delete next[gId];
+        return next;
+      });
+      setLeavingGroup(null);
+    } catch (err) {
+      console.error('Error leaving group:', err);
+      handleFirestoreError(err, OperationType.UPDATE, `groups/${gId}`);
+    } finally {
+      setIsLeavingLoading(false);
+    }
+  };
+
   const updateGroup = async (id: string) => {
     if (!editName.trim()) return;
     try {
@@ -328,6 +362,19 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
                           className="p-2.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
                         >
                           <Trash2 className="w-5 h-5" />
+                        </button>
+                      )}
+
+                      {!isOwner && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setLeavingGroup(group);
+                          }}
+                          title="Opustit kasu"
+                          className="p-2.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                        >
+                          <LogOut className="w-5 h-5" />
                         </button>
                       )}
                     </div>
@@ -583,6 +630,55 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
             onClose={() => setSharingGroup(null)}
           />
         )}
+
+        {/* Modal: Leave Group Confirmation */}
+        <AnimatePresence>
+          {leavingGroup && (
+            <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-white rounded-3xl p-6 max-w-sm w-full border border-slate-200 shadow-2xl text-center space-y-4"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">Opustit sdílenou kasu?</h3>
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    Opravdu chcete opustit kasu <span className="font-bold text-slate-800">"{leavingGroup.name}"</span>? Okamžitě přijdete o přístup ke všem datům a zpátky se nedostanete, dokud vám vlastník nepošle novou pozvánku.
+                  </p>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setLeavingGroup(null)}
+                    disabled={isLeavingLoading}
+                    className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  >
+                    Zrušit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmLeaveGroup}
+                    disabled={isLeavingLoading}
+                    className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer"
+                  >
+                    {isLeavingLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <LogOut className="w-4 h-4" />
+                        Ano, opustit
+                      </>
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

@@ -28,13 +28,14 @@ service cloud.firestore {
       let emailRaw = getUserEmailRaw();
       return isSignedIn() && (
         g.ownerId == request.auth.uid ||
-        (('memberUids' in g) && g.memberUids.hasAny([request.auth.uid])) ||
+        (('memberUids' in g) && (request.auth.uid in g.memberUids)) ||
         (('allowedEmails' in g) && (
-          (emailLower != '' && g.allowedEmails.hasAny([emailLower])) || 
-          (emailRaw != '' && g.allowedEmails.hasAny([emailRaw]))
+          (emailLower != '' && (emailLower in g.allowedEmails)) || 
+          (emailRaw != '' && (emailRaw in g.allowedEmails))
         )) ||
         (('sharedUsers' in g) && g.sharedUsers.exists(u, 
           u.email.lower() == emailLower || 
+          u.email == emailRaw ||
           (('uid' in u) && u.uid == request.auth.uid)
         ))
       );
@@ -48,9 +49,10 @@ service cloud.firestore {
     function canWriteGroupData(gId) {
       let g = get(/databases/$(database)/documents/groups/$(gId)).data;
       let emailLower = getUserEmail();
+      let emailRaw = getUserEmailRaw();
       let isOwner = g.ownerId == request.auth.uid;
       let isExplicitViewer = ('sharedUsers' in g) && g.sharedUsers.exists(u, 
-        (u.email.lower() == emailLower || (('uid' in u) && u.uid == request.auth.uid)) && 
+        (u.email.lower() == emailLower || u.email == emailRaw || (('uid' in u) && u.uid == request.auth.uid)) && 
         u.role == 'viewer'
       );
       return isUserInGroupData(g) && (isOwner || !isExplicitViewer);
@@ -80,9 +82,12 @@ service cloud.firestore {
         (
           // Cannot change ownerId
           incoming().ownerId == resource.data.ownerId &&
-          // Cannot remove existing editors from sharedUsers
+          // Editor cannot remove OTHER editors from sharedUsers (can remove themselves or non-editors)
           (!('sharedUsers' in resource.data) || resource.data.sharedUsers.all(u, 
             u.role != 'editor' || 
+            u.email.lower() == getUserEmail() ||
+            u.email == getUserEmailRaw() ||
+            (('uid' in u) && u.uid == request.auth.uid) ||
             ('sharedUsers' in incoming() && incoming().sharedUsers.exists(iu, iu.email.lower() == u.email.lower() && iu.role == 'editor'))
           ))
         )

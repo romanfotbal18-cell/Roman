@@ -19,7 +19,8 @@ import {
   LogOut,
   Send,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -37,6 +38,7 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
   const [copiedLink, setCopiedLink] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
 
   // Local state for instant optimistic UI updates (so deleted users vanish immediately!)
   const [localSharedUsers, setLocalSharedUsers] = useState<GroupMemberRole[]>(group.sharedUsers || []);
@@ -181,7 +183,6 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
 
   const handleLeaveGroup = async () => {
     if (isOwner) return;
-    if (!confirm('Opravdu chcete opustit tuto sdílenou kasu? Přijdete k ní o přístup.')) return;
 
     setIsSubmitting(true);
     try {
@@ -196,6 +197,7 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
         memberUids: updatedMemberUids
       });
 
+      setShowLeaveConfirm(false);
       onClose();
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `groups/${group.id}`);
@@ -511,9 +513,10 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
             {!isOwner && (
               <div className="pt-2">
                 <button
-                  onClick={handleLeaveGroup}
+                  type="button"
+                  onClick={() => setShowLeaveConfirm(true)}
                   disabled={isSubmitting}
-                  className="w-full py-3 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-2xl flex items-center justify-center gap-2 transition-all border border-rose-100"
+                  className="w-full py-3 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-2xl flex items-center justify-center gap-2 transition-all border border-rose-100 cursor-pointer"
                 >
                   <LogOut className="w-4 h-4" />
                   Opustit tuto sdílenou kasu
@@ -522,6 +525,55 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
             )}
           </div>
         </motion.div>
+
+        {/* Leave Confirmation Modal Overlay */}
+        <AnimatePresence>
+          {showLeaveConfirm && (
+            <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-white rounded-3xl p-6 max-w-sm w-full border border-slate-200 shadow-2xl text-center space-y-4"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">Opustit sdílenou kasu?</h3>
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    Opravdu chcete opustit kasu <span className="font-bold text-slate-800">"{group.name}"</span>? Okamžitě přijdete o přístup ke všem datům a zpátky se nedostanete, dokud vám vlastník nepošle novou pozvánku.
+                  </p>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowLeaveConfirm(false)}
+                    disabled={isSubmitting}
+                    className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  >
+                    Zrušit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLeaveGroup}
+                    disabled={isSubmitting}
+                    className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer"
+                  >
+                    {isSubmitting ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <LogOut className="w-4 h-4" />
+                        Ano, opustit
+                      </>
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     </AnimatePresence>
   );
