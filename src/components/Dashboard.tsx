@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../firebase';
-import { handleFirestoreError, formatCurrency, formatDate, cn } from '../utils';
+import { db, auth } from '../firebase';
+import { handleFirestoreError, formatCurrency, formatDate, cn, getUserRole } from '../utils';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -12,6 +12,7 @@ import {
   CreditCard, 
   ReceiptText, 
   X,
+  Eye,
   ChevronDown,
   ChevronUp,
   BarChart3,
@@ -67,6 +68,8 @@ type DetailType = 'balance' | 'income' | 'expense' | 'debt' | null;
 type StatView = 'sponsors' | 'debtors' | 'violations' | 'monthly' | 'streaks';
 
 export default function Dashboard({ group, period, onNavigate, onOpenQuickAction }: DashboardProps) {
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
   const [stats, setStats] = useState({
     totalIncome: 0,
     totalExpense: 0,

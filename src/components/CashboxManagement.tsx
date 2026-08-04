@@ -1046,25 +1046,27 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-6 border-t border-bento-card-border shrink-0">
-                  <button
-                    onClick={() => {
-                      setEditingTransaction(viewingTransaction);
-                      setViewingTransaction(null);
-                    }}
-                    className="flex-1 btn-bento-secondary py-3 text-xs font-bold"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                    Upravit
-                  </button>
-                  <button
-                    onClick={() => setDeleteConfirmId(viewingTransaction.id)}
-                    className="flex-1 bg-rose-50 text-rose-600 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-rose-100 transition-all"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    Smazat
-                  </button>
-                </div>
+                {!isReadOnly && (
+                  <div className="grid grid-cols-2 gap-3 pt-6 border-t border-bento-card-border shrink-0">
+                    <button
+                      onClick={() => {
+                        setEditingTransaction(viewingTransaction);
+                        setViewingTransaction(null);
+                      }}
+                      className="flex-1 btn-bento-secondary py-3 text-xs font-bold"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                      Upravit
+                    </button>
+                    <button
+                      onClick={() => setDeleteConfirmId(viewingTransaction.id)}
+                      className="flex-1 bg-rose-50 text-rose-600 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-rose-100 transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Smazat
+                    </button>
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>

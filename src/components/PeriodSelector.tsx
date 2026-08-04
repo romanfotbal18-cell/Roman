@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, orderBy, getDocs, writeBatch, where } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, OperationType } from '../types';
-import { handleFirestoreError, cn } from '../utils';
-import { Plus, Trash2, Edit2, ArrowLeft, Calendar, Loader2, AlertTriangle } from 'lucide-react';
+import { handleFirestoreError, cn, getUserRole } from '../utils';
+import { Plus, Trash2, Edit2, ArrowLeft, Calendar, Loader2, AlertTriangle, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ThemeToggle from './ThemeToggle';
 
@@ -14,6 +14,8 @@ interface PeriodSelectorProps {
 }
 
 export default function PeriodSelector({ group, onSelect, onBack }: PeriodSelectorProps) {
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
   const [periods, setPeriods] = useState<Period[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
@@ -164,17 +166,28 @@ export default function PeriodSelector({ group, onSelect, onBack }: PeriodSelect
 
           <div className="flex items-center gap-4">
             <ThemeToggle />
-            <button
-              onClick={() => setIsAdding(true)}
-              className="group flex items-center gap-3 bg-bento-accent text-white px-6 py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-bento-accent/20 active:scale-95"
-            >
-              <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
-                <Plus className="w-4 h-4" />
-              </div>
-              Vytvořit období
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={() => setIsAdding(true)}
+                className="group flex items-center gap-3 bg-bento-accent text-white px-6 py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-bento-accent/20 active:scale-95"
+              >
+                <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+                  <Plus className="w-4 h-4" />
+                </div>
+                Vytvořit období
+              </button>
+            )}
           </div>
         </div>
+
+        {isReadOnly && (
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center gap-3 text-amber-800">
+            <Eye className="w-5 h-5 text-amber-600 shrink-0" />
+            <p className="text-xs font-bold">
+              Jste v režimu Pouze pro čtení. Nemáte oprávnění vytvářet ani upravovat období.
+            </p>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-20">
@@ -196,27 +209,29 @@ export default function PeriodSelector({ group, onSelect, onBack }: PeriodSelect
                     <Calendar className="w-5 h-5" />
                   </div>
                   
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditingPeriodId(period.id);
-                        setEditName(period.name);
-                      }}
-                      className="p-2 text-slate-400 hover:text-bento-accent hover:bg-slate-50 rounded-xl transition-all"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteConfirmId(period.id);
-                      }}
-                      className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                  {!isReadOnly && (
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingPeriodId(period.id);
+                          setEditName(period.name);
+                        }}
+                        className="p-2 text-slate-400 hover:text-bento-accent hover:bg-slate-50 rounded-xl transition-all"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteConfirmId(period.id);
+                        }}
+                        className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div>

@@ -457,31 +457,33 @@ export default function DebtList({ group, period }: DebtListProps) {
                                 {isPartial && <span className="text-[9px] font-bold text-slate-400">Zbývá z {formatCurrency(fine.amount)}</span>}
                               </div>
                               
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditFineReason(fine.reason);
-                                    setEditFineAmount(fine.amount.toString());
-                                    setEditFineQuantity(fine.quantity || 1);
-                                    setEditFineUnitPrice(fine.unitPrice || fine.amount);
-                                    setEditFineDate(new Date(fine.createdAt).toISOString().split('T')[0]);
-                                    setIsEditingFine(fine);
-                                  }}
-                                  className="p-1.5 text-slate-400 hover:text-bento-accent hover:bg-slate-100 rounded-lg transition-all"
-                                >
-                                  <Edit2 className="w-3.5 h-3.5" />
-                                </button>
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setIsDeletingFine(fine);
-                                  }}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-all"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                              {!isReadOnly && (
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditFineReason(fine.reason);
+                                      setEditFineAmount(fine.amount.toString());
+                                      setEditFineQuantity(fine.quantity || 1);
+                                      setEditFineUnitPrice(fine.unitPrice || fine.amount);
+                                      setEditFineDate(new Date(fine.createdAt).toISOString().split('T')[0]);
+                                      setIsEditingFine(fine);
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-bento-accent hover:bg-slate-100 rounded-lg transition-all"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setIsDeletingFine(fine);
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-all"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );
