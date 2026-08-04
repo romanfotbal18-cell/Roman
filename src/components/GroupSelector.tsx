@@ -69,9 +69,14 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
             const updatedSharedUsers = (g.sharedUsers || []).map(su => 
               su.email.toLowerCase() === userEmail ? { ...su, uid: userUid } : su
             );
+            const viewerEmails = updatedSharedUsers.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+            const viewerUids = updatedSharedUsers.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
+
             updateDoc(doc(db, 'groups', g.id), {
               memberUids: updatedMemberUids,
-              sharedUsers: updatedSharedUsers
+              sharedUsers: updatedSharedUsers,
+              viewerEmails,
+              viewerUids
             }).catch(console.error);
           }
         });
@@ -186,18 +191,25 @@ export default function GroupSelector({ onSelect, onLogout }: GroupSelectorProps
     if (!leavingGroup || !auth.currentUser) return;
     const user = auth.currentUser;
     const userEmail = (user.email || '').toLowerCase();
+    const userUid = user.uid;
     const gId = leavingGroup.id;
 
     setIsLeavingLoading(true);
     try {
-      const updatedShared = (leavingGroup.sharedUsers || []).filter(u => u.email.toLowerCase() !== userEmail && u.uid !== user.uid);
+      const updatedShared = (leavingGroup.sharedUsers || []).filter(u => 
+        (u.email ? u.email.toLowerCase() : '') !== userEmail && (userUid ? u.uid !== userUid : true)
+      );
       const updatedAllowedEmails = (leavingGroup.allowedEmails || []).filter(e => e.toLowerCase() !== userEmail);
-      const updatedMemberUids = (leavingGroup.memberUids || []).filter(uid => uid !== user.uid);
+      const updatedMemberUids = (leavingGroup.memberUids || []).filter(uid => userUid ? uid !== userUid : true);
+      const viewerEmails = updatedShared.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+      const viewerUids = updatedShared.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
 
       await updateDoc(doc(db, 'groups', gId), {
         sharedUsers: updatedShared,
         allowedEmails: updatedAllowedEmails,
-        memberUids: updatedMemberUids
+        memberUids: updatedMemberUids,
+        viewerEmails,
+        viewerUids
       });
 
       setGroupsMap(prev => {

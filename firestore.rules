@@ -11,34 +11,43 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function getUserEmail() {
-      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
+    function getUserEmailLower() {
+      return (request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
         ? request.auth.token.email.lower() 
         : '';
     }
 
     function getUserEmailRaw() {
-      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
+      return (request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
         ? request.auth.token.email 
         : '';
     }
 
     function isUserInGroupData(g) {
-      let emailLower = getUserEmail();
+      let emailLower = getUserEmailLower();
       let emailRaw = getUserEmailRaw();
       let uid = request.auth.uid;
       
-      return isSignedIn() && (
+      return isSignedIn() && g != null && (
         g.ownerId == uid ||
         (('memberUids' in g) && (g.memberUids is list) && g.memberUids.hasAny([uid])) ||
         (('allowedEmails' in g) && (g.allowedEmails is list) && (
           (emailLower != '' && g.allowedEmails.hasAny([emailLower])) || 
           (emailRaw != '' && g.allowedEmails.hasAny([emailRaw]))
-        )) ||
-        (('sharedUsers' in g) && (g.sharedUsers is list) && g.sharedUsers.exists(u, 
-          (emailLower != '' && ('email' in u) && u.email.lower() == emailLower) || 
-          (emailRaw != '' && ('email' in u) && u.email == emailRaw) ||
-          (('uid' in u) && u.uid == uid)
+        ))
+      );
+    }
+
+    function isViewer(g) {
+      let emailLower = getUserEmailLower();
+      let emailRaw = getUserEmailRaw();
+      let uid = request.auth.uid;
+
+      return (
+        (('viewerUids' in g) && (g.viewerUids is list) && g.viewerUids.hasAny([uid])) ||
+        (('viewerEmails' in g) && (g.viewerEmails is list) && (
+          (emailLower != '' && g.viewerEmails.hasAny([emailLower])) ||
+          (emailRaw != '' && g.viewerEmails.hasAny([emailRaw]))
         ))
       );
     }
@@ -50,18 +59,8 @@ service cloud.firestore {
 
     function canWriteGroupData(gId) {
       let g = get(/databases/$(database)/documents/groups/$(gId)).data;
-      let emailLower = getUserEmail();
-      let emailRaw = getUserEmailRaw();
-      let uid = request.auth.uid;
-      let isOwner = g.ownerId == uid;
-      
-      let isExplicitViewer = ('sharedUsers' in g) && (g.sharedUsers is list) && g.sharedUsers.exists(u, 
-        ((emailLower != '' && ('email' in u) && u.email.lower() == emailLower) || 
-         (emailRaw != '' && ('email' in u) && u.email == emailRaw) || 
-         (('uid' in u) && u.uid == uid)) && 
-        u.role == 'viewer'
-      );
-      return isUserInGroupData(g) && (isOwner || !isExplicitViewer);
+      let isOwner = g.ownerId == request.auth.uid;
+      return isUserInGroupData(g) && (isOwner || !isViewer(g));
     }
 
     function incoming() {
@@ -70,7 +69,8 @@ service cloud.firestore {
 
     // --- Groups ---
     match /groups/{groupId} {
-      allow read: if isUserInGroupData(resource.data);
+      allow list: if isSignedIn();
+      allow get: if isUserInGroupData(resource.data);
       
       allow create: if isSignedIn() 
                     && incoming().ownerId == request.auth.uid 
@@ -78,24 +78,13 @@ service cloud.firestore {
                     && incoming().name.size() <= 100;
                     
       allow update: if isSignedIn() && (
-        canWriteGroupData(groupId) ||
-        // Allow joining user to add themselves to memberUids
-        (incoming().diff(resource.data).affectedKeys().hasOnly(['memberUids']))
-      ) && (
-        // Owner can update anything
+        // 1. Owner can update anything
         resource.data.ownerId == request.auth.uid ||
-        // Editor update rules:
+        // 2. Any group member (editor, viewer, or user leaving/joining) can update group document
+        // as long as ownerId remains unchanged
         (
-          // Cannot change ownerId
-          incoming().ownerId == resource.data.ownerId &&
-          // Editor cannot remove OTHER editors from sharedUsers
-          (!('sharedUsers' in resource.data) || !('sharedUsers' in incoming()) || incoming().sharedUsers == resource.data.sharedUsers || resource.data.sharedUsers.all(u, 
-            u.role != 'editor' || 
-            (('email' in u) && getUserEmail() != '' && u.email.lower() == getUserEmail()) ||
-            (('email' in u) && getUserEmailRaw() != '' && u.email == getUserEmailRaw()) ||
-            (('uid' in u) && u.uid == request.auth.uid) ||
-            incoming().sharedUsers.exists(iu, ('email' in iu) && ('email' in u) && iu.email.lower() == u.email.lower() && iu.role == 'editor')
-          ))
+          isUserInGroupData(resource.data) &&
+          incoming().ownerId == resource.data.ownerId
         )
       ) && incoming().name is string && incoming().name.size() <= 100;
 

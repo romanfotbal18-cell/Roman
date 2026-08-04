@@ -10,7 +10,7 @@ export function getUserRole(group: Group, userEmail?: string | null, userUid?: s
 
   if (group.sharedUsers && Array.isArray(group.sharedUsers)) {
     const match = group.sharedUsers.find(
-      u => (currentUid && u.uid === currentUid) || (currentEmail && u.email.toLowerCase() === currentEmail)
+      u => (currentUid && u.uid === currentUid) || (currentEmail && u.email?.toLowerCase() === currentEmail)
     );
     if (match) {
       return match.role;

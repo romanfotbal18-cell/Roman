@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { Group, GroupMemberRole, OperationType } from '../types';
 import { getUserRole, handleFirestoreError, cn } from '../utils';
 import { 
@@ -29,9 +29,10 @@ interface ShareModalProps {
   user: User;
   isOpen: boolean;
   onClose: () => void;
+  onLeave?: () => void;
 }
 
-export default function ShareModal({ group, user, isOpen, onClose }: ShareModalProps) {
+export default function ShareModal({ group, user, isOpen, onClose, onLeave }: ShareModalProps) {
   const [emailInput, setEmailInput] = useState('');
   const [roleInput, setRoleInput] = useState<'editor' | 'viewer'>('editor');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -98,10 +99,14 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
         ...(group.allowedEmails || []),
         cleanEmail
       ]));
+      const viewerEmails = updatedShared.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+      const viewerUids = updatedShared.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
 
       await updateDoc(doc(db, 'groups', group.id), {
         sharedUsers: updatedShared,
         allowedEmails: updatedAllowedEmails,
+        viewerEmails,
+        viewerUids,
         ownerEmail: group.ownerEmail || user.email || ''
       });
 
@@ -127,16 +132,20 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
     const cleanTarget = targetEmail.toLowerCase();
 
     // Optimistically update local state
-    setLocalSharedUsers(prev => prev.map(u => u.email.toLowerCase() === cleanTarget ? { ...u, role: newRole } : u));
+    setLocalSharedUsers(prev => prev.map(u => (u.email?.toLowerCase() === cleanTarget) ? { ...u, role: newRole } : u));
 
     setIsSubmitting(true);
     try {
       const updatedShared = (group.sharedUsers || []).map(u => 
-        u.email.toLowerCase() === cleanTarget ? { ...u, role: newRole } : u
+        (u.email?.toLowerCase() === cleanTarget) ? { ...u, role: newRole } : u
       );
+      const viewerEmails = updatedShared.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+      const viewerUids = updatedShared.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
 
       await updateDoc(doc(db, 'groups', group.id), {
-        sharedUsers: updatedShared
+        sharedUsers: updatedShared,
+        viewerEmails,
+        viewerUids
       });
     } catch (err) {
       setLocalSharedUsers(group.sharedUsers || []);
@@ -149,7 +158,7 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
   const handleRemoveUser = async (targetEmail: string) => {
     if (!canManage) return;
     const cleanTarget = targetEmail.toLowerCase();
-    const targetUser = (group.sharedUsers || []).find(u => u.email.toLowerCase() === cleanTarget);
+    const targetUser = (group.sharedUsers || []).find(u => u.email?.toLowerCase() === cleanTarget);
 
     if (!isOwner && targetUser?.role === 'editor') {
       setErrorMsg('Jako editor nemůžete odebrat z kasy jiné editory.');
@@ -157,20 +166,24 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
     }
 
     // Optimistically remove from local state IMMEDIATELY so the row disappears at once!
-    setLocalSharedUsers(prev => prev.filter(u => u.email.toLowerCase() !== cleanTarget));
+    setLocalSharedUsers(prev => prev.filter(u => u.email?.toLowerCase() !== cleanTarget));
 
     setIsSubmitting(true);
     try {
-      const updatedShared = (group.sharedUsers || []).filter(u => u.email.toLowerCase() !== cleanTarget);
+      const updatedShared = (group.sharedUsers || []).filter(u => u.email?.toLowerCase() !== cleanTarget);
       const updatedAllowedEmails = (group.allowedEmails || []).filter(e => e.toLowerCase() !== cleanTarget);
       
-      const removedUser = (group.sharedUsers || []).find(u => u.email.toLowerCase() === cleanTarget);
-      const updatedMemberUids = (group.memberUids || []).filter(uid => uid !== removedUser?.uid);
+      const removedUser = (group.sharedUsers || []).find(u => u.email?.toLowerCase() === cleanTarget);
+      const updatedMemberUids = (group.memberUids || []).filter(uid => removedUser?.uid ? uid !== removedUser.uid : true);
+      const viewerEmails = updatedShared.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+      const viewerUids = updatedShared.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
 
       await updateDoc(doc(db, 'groups', group.id), {
         sharedUsers: updatedShared,
         allowedEmails: updatedAllowedEmails,
-        memberUids: updatedMemberUids
+        memberUids: updatedMemberUids,
+        viewerEmails,
+        viewerUids
       });
     } catch (err) {
       // Rollback on error
@@ -187,19 +200,29 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
     setIsSubmitting(true);
     try {
       const userEmail = (user.email || '').toLowerCase();
-      const updatedShared = (group.sharedUsers || []).filter(u => u.email.toLowerCase() !== userEmail && u.uid !== user.uid);
+      const userUid = user.uid || auth.currentUser?.uid || '';
+
+      const updatedShared = (group.sharedUsers || []).filter(u => 
+        (u.email ? u.email.toLowerCase() : '') !== userEmail && (userUid ? u.uid !== userUid : true)
+      );
       const updatedAllowedEmails = (group.allowedEmails || []).filter(e => e.toLowerCase() !== userEmail);
-      const updatedMemberUids = (group.memberUids || []).filter(uid => uid !== user.uid);
+      const updatedMemberUids = (group.memberUids || []).filter(uid => userUid ? uid !== userUid : true);
+      const viewerEmails = updatedShared.filter(u => u.role === 'viewer' && u.email).map(u => u.email.toLowerCase());
+      const viewerUids = updatedShared.filter(u => u.role === 'viewer' && u.uid).map(u => u.uid!);
 
       await updateDoc(doc(db, 'groups', group.id), {
         sharedUsers: updatedShared,
         allowedEmails: updatedAllowedEmails,
-        memberUids: updatedMemberUids
+        memberUids: updatedMemberUids,
+        viewerEmails,
+        viewerUids
       });
 
       setShowLeaveConfirm(false);
       onClose();
+      onLeave?.();
     } catch (err) {
+      console.error('Error leaving group:', err);
       handleFirestoreError(err, OperationType.UPDATE, `groups/${group.id}`);
     } finally {
       setIsSubmitting(false);

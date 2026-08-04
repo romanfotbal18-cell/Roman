@@ -206,6 +206,7 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
           user={user}
           isOpen={isShareModalOpen}
           onClose={() => setIsShareModalOpen(false)}
+          onLeave={onBackToGroups}
         />
       )}
 

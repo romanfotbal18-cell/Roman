@@ -15,6 +15,8 @@ export interface Group {
   memberUids?: string[];
   allowedEmails?: string[];
   sharedUsers?: GroupMemberRole[];
+  viewerEmails?: string[];
+  viewerUids?: string[];
   createdAt?: any;
 }
 
