@@ -12,13 +12,13 @@ service cloud.firestore {
     }
 
     function getUserEmail() {
-      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token)) 
+      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
         ? request.auth.token.email.lower() 
         : '';
     }
 
     function getUserEmailRaw() {
-      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token)) 
+      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token) && request.auth.token.email != null) 
         ? request.auth.token.email 
         : '';
     }
@@ -26,17 +26,19 @@ service cloud.firestore {
     function isUserInGroupData(g) {
       let emailLower = getUserEmail();
       let emailRaw = getUserEmailRaw();
+      let uid = request.auth.uid;
+      
       return isSignedIn() && (
-        g.ownerId == request.auth.uid ||
-        (('memberUids' in g) && (request.auth.uid in g.memberUids)) ||
-        (('allowedEmails' in g) && (
-          (emailLower != '' && (emailLower in g.allowedEmails)) || 
-          (emailRaw != '' && (emailRaw in g.allowedEmails))
+        g.ownerId == uid ||
+        (('memberUids' in g) && (g.memberUids is list) && g.memberUids.hasAny([uid])) ||
+        (('allowedEmails' in g) && (g.allowedEmails is list) && (
+          (emailLower != '' && g.allowedEmails.hasAny([emailLower])) || 
+          (emailRaw != '' && g.allowedEmails.hasAny([emailRaw]))
         )) ||
-        (('sharedUsers' in g) && g.sharedUsers.exists(u, 
-          u.email.lower() == emailLower || 
-          u.email == emailRaw ||
-          (('uid' in u) && u.uid == request.auth.uid)
+        (('sharedUsers' in g) && (g.sharedUsers is list) && g.sharedUsers.exists(u, 
+          (emailLower != '' && ('email' in u) && u.email.lower() == emailLower) || 
+          (emailRaw != '' && ('email' in u) && u.email == emailRaw) ||
+          (('uid' in u) && u.uid == uid)
         ))
       );
     }
@@ -50,9 +52,13 @@ service cloud.firestore {
       let g = get(/databases/$(database)/documents/groups/$(gId)).data;
       let emailLower = getUserEmail();
       let emailRaw = getUserEmailRaw();
-      let isOwner = g.ownerId == request.auth.uid;
-      let isExplicitViewer = ('sharedUsers' in g) && g.sharedUsers.exists(u, 
-        (u.email.lower() == emailLower || u.email == emailRaw || (('uid' in u) && u.uid == request.auth.uid)) && 
+      let uid = request.auth.uid;
+      let isOwner = g.ownerId == uid;
+      
+      let isExplicitViewer = ('sharedUsers' in g) && (g.sharedUsers is list) && g.sharedUsers.exists(u, 
+        ((emailLower != '' && ('email' in u) && u.email.lower() == emailLower) || 
+         (emailRaw != '' && ('email' in u) && u.email == emailRaw) || 
+         (('uid' in u) && u.uid == uid)) && 
         u.role == 'viewer'
       );
       return isUserInGroupData(g) && (isOwner || !isExplicitViewer);
@@ -82,13 +88,13 @@ service cloud.firestore {
         (
           // Cannot change ownerId
           incoming().ownerId == resource.data.ownerId &&
-          // Editor cannot remove OTHER editors from sharedUsers (can remove themselves or non-editors)
-          (!('sharedUsers' in resource.data) || resource.data.sharedUsers.all(u, 
+          // Editor cannot remove OTHER editors from sharedUsers
+          (!('sharedUsers' in resource.data) || !('sharedUsers' in incoming()) || incoming().sharedUsers == resource.data.sharedUsers || resource.data.sharedUsers.all(u, 
             u.role != 'editor' || 
-            u.email.lower() == getUserEmail() ||
-            u.email == getUserEmailRaw() ||
+            (('email' in u) && getUserEmail() != '' && u.email.lower() == getUserEmail()) ||
+            (('email' in u) && getUserEmailRaw() != '' && u.email == getUserEmailRaw()) ||
             (('uid' in u) && u.uid == request.auth.uid) ||
-            ('sharedUsers' in incoming() && incoming().sharedUsers.exists(iu, iu.email.lower() == u.email.lower() && iu.role == 'editor'))
+            incoming().sharedUsers.exists(iu, ('email' in iu) && ('email' in u) && iu.email.lower() == u.email.lower() && iu.role == 'editor')
           ))
         )
       ) && incoming().name is string && incoming().name.size() <= 100;
