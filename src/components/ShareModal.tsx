@@ -119,6 +119,12 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
   const handleUpdateRole = async (targetEmail: string, newRole: 'editor' | 'viewer') => {
     if (!canManage) return;
     const cleanTarget = targetEmail.toLowerCase();
+    const targetUser = (group.sharedUsers || []).find(u => u.email.toLowerCase() === cleanTarget);
+
+    if (!isOwner && targetUser?.role === 'editor') {
+      setErrorMsg('Jako editor nemůžete měnit roli jiným editorům.');
+      return;
+    }
 
     // Optimistically update local state
     setLocalSharedUsers(prev => prev.map(u => u.email.toLowerCase() === cleanTarget ? { ...u, role: newRole } : u));
@@ -143,6 +149,12 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
   const handleRemoveUser = async (targetEmail: string) => {
     if (!canManage) return;
     const cleanTarget = targetEmail.toLowerCase();
+    const targetUser = (group.sharedUsers || []).find(u => u.email.toLowerCase() === cleanTarget);
+
+    if (!isOwner && targetUser?.role === 'editor') {
+      setErrorMsg('Jako editor nemůžete odebrat z kasy jiné editory.');
+      return;
+    }
 
     // Optimistically remove from local state IMMEDIATELY so the row disappears at once!
     setLocalSharedUsers(prev => prev.filter(u => u.email.toLowerCase() !== cleanTarget));
@@ -440,25 +452,37 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
                         {canManage ? (
                           <>
                             {/* Role Switcher */}
-                            <select
-                              value={su.role}
-                              onChange={(e) => handleUpdateRole(su.email, e.target.value as 'editor' | 'viewer')}
-                              disabled={isSubmitting}
-                              className="text-[11px] font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl px-2.5 py-1.5 cursor-pointer text-slate-700 focus:outline-none"
-                            >
-                              <option value="editor">Editor (Plný)</option>
-                              <option value="viewer">Čtenář (Prohlížení)</option>
-                            </select>
+                            {(!isOwner && su.role === 'editor') ? (
+                              <span className="px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg bg-blue-100 text-blue-800">
+                                Editor
+                              </span>
+                            ) : (
+                              <select
+                                value={su.role}
+                                onChange={(e) => handleUpdateRole(su.email, e.target.value as 'editor' | 'viewer')}
+                                disabled={isSubmitting}
+                                className="text-[11px] font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl px-2.5 py-1.5 cursor-pointer text-slate-700 focus:outline-none"
+                              >
+                                <option value="editor">Editor (Plný)</option>
+                                <option value="viewer">Čtenář (Prohlížení)</option>
+                              </select>
+                            )}
 
                             {/* Remove button */}
-                            <button
-                              onClick={() => handleRemoveUser(su.email)}
-                              disabled={isSubmitting}
-                              title="Odebrat přístup"
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {(!isOwner && su.role === 'editor') ? (
+                              <span className="p-1.5 text-slate-300 cursor-not-allowed" title="Jako editor nemůžete odebrat jiného editora">
+                                <Trash2 className="w-4 h-4 opacity-30" />
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleRemoveUser(su.email)}
+                                disabled={isSubmitting}
+                                title="Odebrat přístup"
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </>
                         ) : (
                           <span className={cn(
