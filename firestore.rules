@@ -11,54 +11,81 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function getUserEmail() {
+      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token)) 
+        ? request.auth.token.email.lower() 
+        : '';
+    }
+
+    function getUserEmailRaw() {
+      return (request.auth != null && request.auth.token != null && ('email' in request.auth.token)) 
+        ? request.auth.token.email 
+        : '';
+    }
+
+    function isUserInGroupData(g) {
+      let emailLower = getUserEmail();
+      let emailRaw = getUserEmailRaw();
+      return isSignedIn() && (
+        g.ownerId == request.auth.uid ||
+        (('memberUids' in g) && g.memberUids.hasAny([request.auth.uid])) ||
+        (('allowedEmails' in g) && (
+          (emailLower != '' && g.allowedEmails.hasAny([emailLower])) || 
+          (emailRaw != '' && g.allowedEmails.hasAny([emailRaw]))
+        )) ||
+        (('sharedUsers' in g) && g.sharedUsers.exists(u, 
+          u.email.lower() == emailLower || 
+          (('uid' in u) && u.uid == request.auth.uid)
+        ))
+      );
     }
 
     function hasGroupAccess(gId) {
       let g = get(/databases/$(database)/documents/groups/$(gId)).data;
-      return isSignedIn() && (
-        g.ownerId == request.auth.uid ||
-        (('memberUids' in g) && (request.auth.uid in g.memberUids)) ||
-        (('allowedEmails' in g) && request.auth.token != null && ('email' in request.auth.token) && (request.auth.token.email.lower() in g.allowedEmails || request.auth.token.email in g.allowedEmails))
-      );
+      return isUserInGroupData(g);
     }
 
     function canWriteGroupData(gId) {
       let g = get(/databases/$(database)/documents/groups/$(gId)).data;
-      let userEmail = (request.auth.token != null && ('email' in request.auth.token)) ? request.auth.token.email.lower() : '';
+      let emailLower = getUserEmail();
       let isOwner = g.ownerId == request.auth.uid;
-      let isExplicitViewer = ('sharedUsers' in g) && g.sharedUsers.exists(u, u.email.lower() == userEmail && u.role == 'viewer');
-      return isSignedIn() && (isOwner || (!isExplicitViewer && hasGroupAccess(gId)));
+      let isExplicitViewer = ('sharedUsers' in g) && g.sharedUsers.exists(u, 
+        (u.email.lower() == emailLower || (('uid' in u) && u.uid == request.auth.uid)) && 
+        u.role == 'viewer'
+      );
+      return isUserInGroupData(g) && (isOwner || !isExplicitViewer);
     }
 
     function incoming() {
       return request.resource.data;
     }
 
-    function existing() {
-      return resource.data;
-    }
-
     // --- Groups ---
     match /groups/{groupId} {
-      allow read: if isSignedIn() && (
-        resource.data.ownerId == request.auth.uid ||
-        (('memberUids' in resource.data) && (request.auth.uid in resource.data.memberUids)) ||
-        (('allowedEmails' in resource.data) && request.auth.token != null && ('email' in request.auth.token) && (request.auth.token.email.lower() in resource.data.allowedEmails || request.auth.token.email in resource.data.allowedEmails))
-      );
+      allow read: if isUserInGroupData(resource.data);
       
-      allow create: if isSignedIn() && incoming().ownerId == request.auth.uid 
-                    && incoming().name is string && incoming().name.size() <= 100;
+      allow create: if isSignedIn() 
+                    && incoming().ownerId == request.auth.uid 
+                    && incoming().name is string 
+                    && incoming().name.size() <= 100;
                     
       allow update: if isSignedIn() && (
         canWriteGroupData(groupId) ||
-        // Allow any authenticated user to add themselves to memberUids when joining
-        (isSignedIn() && incoming().diff(resource.data).affectedKeys().hasOnly(['memberUids']))
+        // Allow joining user to add themselves to memberUids
+        (incoming().diff(resource.data).affectedKeys().hasOnly(['memberUids']))
       ) && (
+        // Owner can update anything
         resource.data.ownerId == request.auth.uid ||
-        !('sharedUsers' in resource.data) ||
-        resource.data.sharedUsers.all(u, u.role != 'editor' || ('sharedUsers' in incoming() && incoming().sharedUsers.exists(iu, iu.email.lower() == u.email.lower() && iu.role == 'editor')))
+        // Editor update rules:
+        (
+          // Cannot change ownerId
+          incoming().ownerId == resource.data.ownerId &&
+          // Cannot remove existing editors from sharedUsers
+          (!('sharedUsers' in resource.data) || resource.data.sharedUsers.all(u, 
+            u.role != 'editor' || 
+            ('sharedUsers' in incoming() && incoming().sharedUsers.exists(iu, iu.email.lower() == u.email.lower() && iu.role == 'editor'))
+          ))
+        )
       ) && incoming().name is string && incoming().name.size() <= 100;
 
       allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
@@ -66,105 +93,71 @@ service cloud.firestore {
       // --- Periods ---
       match /periods/{periodId} {
         allow read: if hasGroupAccess(groupId);
-        allow create: if canWriteGroupData(groupId)
-                      && incoming().name is string && incoming().name.size() <= 100
-                      && incoming().groupId == groupId;
-        allow update: if canWriteGroupData(groupId)
-                      && incoming().groupId == groupId;
+        allow create: if canWriteGroupData(groupId);
+        allow update: if canWriteGroupData(groupId);
         allow delete: if canWriteGroupData(groupId);
 
         // --- Members ---
         match /members/{memberId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().groupId == groupId;
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Member Groups ---
         match /memberGroups/{mgId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().memberIds is list
-                        && incoming().groupId == groupId;
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Fine Templates ---
         match /fineTemplates/{templateId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().amount is number
-                        && incoming().groupId == groupId;
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().groupId == groupId || !('groupId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Fines ---
         match /fines/{fineId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().amount is number
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Payments ---
         match /payments/{paymentId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().amount is number
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Transactions ---
         match /transactions/{transactionId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().amount is number
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
-          allow update: if canWriteGroupData(groupId)
-                        && (incoming().periodId == periodId || !('periodId' in incoming()));
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Events ---
         match /events/{eventId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().date is string
-                        && incoming().groupId == groupId
-                        && incoming().periodId == periodId;
-          allow update: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().date is string;
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
 
         // --- Goals ---
         match /goals/{goalId} {
           allow read: if hasGroupAccess(groupId);
-          allow create: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().targetAmount is number
-                        && incoming().periodId == periodId;
-          allow update: if canWriteGroupData(groupId)
-                        && incoming().name is string && incoming().name.size() <= 100
-                        && incoming().targetAmount is number;
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
       }

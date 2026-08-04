@@ -118,13 +118,11 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
 
   const handleUpdateRole = async (targetEmail: string, newRole: 'editor' | 'viewer') => {
     if (!canManage) return;
-    const cleanTarget = targetEmail.toLowerCase();
-    const targetUser = (group.sharedUsers || []).find(u => u.email.toLowerCase() === cleanTarget);
-
-    if (!isOwner && targetUser?.role === 'editor') {
-      setErrorMsg('Jako editor nemůžete měnit roli jiným editorům.');
+    if (!isOwner) {
+      setErrorMsg('Pouze vlastník kasy může měnit role uživatelům.');
       return;
     }
+    const cleanTarget = targetEmail.toLowerCase();
 
     // Optimistically update local state
     setLocalSharedUsers(prev => prev.map(u => u.email.toLowerCase() === cleanTarget ? { ...u, role: newRole } : u));
@@ -452,9 +450,12 @@ export default function ShareModal({ group, user, isOpen, onClose }: ShareModalP
                         {canManage ? (
                           <>
                             {/* Role Switcher */}
-                            {(!isOwner && su.role === 'editor') ? (
-                              <span className="px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg bg-blue-100 text-blue-800">
-                                Editor
+                            {!isOwner ? (
+                              <span className={cn(
+                                "px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg",
+                                su.role === 'editor' ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"
+                              )}>
+                                {su.role === 'editor' ? 'Editor' : 'Čtenář'}
                               </span>
                             ) : (
                               <select
