@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, writeBatch, deleteDoc, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
-import { handleFirestoreError, formatCurrency, cn } from '../utils';
-import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download } from 'lucide-react';
+import { handleFirestoreError, formatCurrency, cn, getUserRole } from '../utils';
+import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 
@@ -13,6 +13,9 @@ interface DebtListProps {
 }
 
 export default function DebtList({ group, period }: DebtListProps) {
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
+
   const [members, setMembers] = useState<Member[]>([]);
   const [fines, setFines] = useState<Fine[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -516,18 +519,25 @@ export default function DebtList({ group, period }: DebtListProps) {
                         </div>
                       ))}
                     </div>
-                    <button
-                      onClick={() => {
-                        const debt = getMemberDebt(selectedMember.id);
-                        setPaymentAmount(debt > 0 ? debt.toString() : '');
-                        setPaymentDate(new Date().toISOString().split('T')[0]);
-                        setIsPaymentModalOpen(true);
-                      }}
-                      className="btn-bento-primary w-full py-4 rounded-2xl shadow-xl shadow-bento-accent/15 flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-98"
-                    >
-                      <CreditCard className="w-5 h-5" />
-                      <span className="text-sm font-bold">Zapsat platbu</span>
-                    </button>
+                    {!isReadOnly ? (
+                      <button
+                        onClick={() => {
+                          const debt = getMemberDebt(selectedMember.id);
+                          setPaymentAmount(debt > 0 ? debt.toString() : '');
+                          setPaymentDate(new Date().toISOString().split('T')[0]);
+                          setIsPaymentModalOpen(true);
+                        }}
+                        className="btn-bento-primary w-full py-4 rounded-2xl shadow-xl shadow-bento-accent/15 flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-98"
+                      >
+                        <CreditCard className="w-5 h-5" />
+                        <span className="text-sm font-bold">Zapsat platbu</span>
+                      </button>
+                    ) : (
+                      <p className="text-xs text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 text-center font-bold flex items-center justify-center gap-2">
+                        <Eye className="w-4 h-4 text-amber-600" />
+                        Režim Čtenáře — zápis plateb není povolen.
+                      </p>
+                    )}
                   </div>
                 </div>
 

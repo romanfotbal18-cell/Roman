@@ -9,6 +9,7 @@ import ManualTransactionForm from './ManualTransactionForm';
 import QuickPayment from './QuickPayment';
 import Settings from './Settings';
 import ThemeToggle from './ThemeToggle';
+import ShareModal from './ShareModal';
 import { 
   LayoutDashboard, 
   Users, 
@@ -21,10 +22,15 @@ import {
   CreditCard,
   TrendingDown,
   TrendingUp,
-  ReceiptText
+  ReceiptText,
+  Crown,
+  Edit3,
+  Eye,
+  Share2,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../utils';
+import { cn, getUserRole } from '../utils';
 
 interface MainLayoutProps {
   user: User;
@@ -40,6 +46,10 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [quickAction, setQuickAction] = useState<string | null>(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  const userRole = getUserRole(group, user.email, user.uid);
+  const isReadOnly = userRole === 'viewer';
 
   const navigation = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -57,7 +67,13 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
             group={group} 
             period={period} 
             onNavigate={(s) => setActiveSection(s as Section)} 
-            onOpenQuickAction={setQuickAction}
+            onOpenQuickAction={(action) => {
+              if (isReadOnly) {
+                alert('Jste v režimu Pouze pro čtení. Nemáte oprávnění provádět změny.');
+                return;
+              }
+              setQuickAction(action);
+            }}
           />
         );
       case 'debts':
@@ -87,10 +103,35 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
               <ChevronLeft className="w-5 h-5 group-hover:-translate-x-0.5 transition-transform" />
             </button>
             <div className="flex flex-col">
-              <span className="text-[10px] uppercase font-bold tracking-widest text-bento-accent leading-none mb-1">
-                {group.name}
-              </span>
-              <span className="text-base font-bold text-bento-text-main leading-none">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase font-bold tracking-widest text-bento-accent leading-none">
+                  {group.name}
+                </span>
+
+                {/* Role badge */}
+                <button
+                  onClick={() => setIsShareModalOpen(true)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 active:scale-95"
+                  title="Klikněte pro správu sdílení"
+                >
+                  {userRole === 'owner' && (
+                    <span className="bg-amber-100 text-amber-800 flex items-center gap-1 px-1.5 py-0.5 rounded">
+                      <Crown className="w-2.5 h-2.5" /> Vlastník
+                    </span>
+                  )}
+                  {userRole === 'editor' && (
+                    <span className="bg-blue-100 text-blue-800 flex items-center gap-1 px-1.5 py-0.5 rounded">
+                      <Edit3 className="w-2.5 h-2.5" /> Editor
+                    </span>
+                  )}
+                  {userRole === 'viewer' && (
+                    <span className="bg-amber-100/80 text-amber-900 border border-amber-300/80 flex items-center gap-1 px-1.5 py-0.5 rounded">
+                      <Eye className="w-2.5 h-2.5" /> Čtenář (Pouze pro čtení)
+                    </span>
+                  )}
+                </button>
+              </div>
+              <span className="text-base font-bold text-bento-text-main leading-none mt-1">
                 {period.name}
               </span>
             </div>
@@ -114,6 +155,15 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
                 </button>
               ))}
             </div>
+
+            <button
+              onClick={() => setIsShareModalOpen(true)}
+              className="p-2.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-sm"
+              title="Sdílet kasu"
+            >
+              <Share2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Sdílet</span>
+            </button>
             
             <ThemeToggle />
             
@@ -138,6 +188,26 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
           </div>
         </div>
       </header>
+
+      {/* Read-only banner if user is viewer */}
+      {isReadOnly && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-6 py-2.5 text-xs font-bold flex items-center justify-center gap-2 text-center shadow-inner">
+          <Eye className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>
+            <strong>Režim Pouze pro čtení:</strong> Tato kasa vám byla nasdílena k nahlížení. Všechny informace si můžete detailně rozkliknout a projít, ale nemáte oprávnění vytvářet ani měnit záznamy.
+          </span>
+        </div>
+      )}
+
+      {/* Share Modal */}
+      {isShareModalOpen && (
+        <ShareModal
+          group={group}
+          user={user}
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
+        />
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 lg:p-8 max-w-[1400px] mx-auto w-full">

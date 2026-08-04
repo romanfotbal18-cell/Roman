@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, orderBy, getDoc, writeBatch, getDocs, where, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member } from '../types';
-import { handleFirestoreError, formatCurrency, formatDate, cn } from '../utils';
-import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus } from 'lucide-react';
+import { handleFirestoreError, formatCurrency, formatDate, cn, getUserRole } from '../utils';
+import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface CashboxManagementProps {
@@ -12,6 +12,9 @@ interface CashboxManagementProps {
 }
 
 export default function CashboxManagement({ group, period }: CashboxManagementProps) {
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
+
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -357,22 +360,31 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
           </div>
         </div>
         
-        <div className="md:col-span-2 flex flex-col gap-4">
-          <button
-            onClick={() => setIsAddingIncome(true)}
-            className="flex-1 btn-bento-primary bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/10"
-          >
-            <TrendingUp className="w-4 h-4" />
-            <span className="text-xs uppercase tracking-widest">Zapsat příjem</span>
-          </button>
-          <button
-            onClick={() => setIsAddingExpense(true)}
-            className="flex-1 btn-bento-primary bg-rose-500 hover:bg-rose-600 shadow-lg shadow-rose-500/10"
-          >
-            <TrendingDown className="w-4 h-4" />
-            <span className="text-xs uppercase tracking-widest">Zapsat výdaj</span>
-          </button>
-        </div>
+        {!isReadOnly ? (
+          <div className="md:col-span-2 flex flex-col gap-4">
+            <button
+              onClick={() => setIsAddingIncome(true)}
+              className="flex-1 btn-bento-primary bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/10"
+            >
+              <TrendingUp className="w-4 h-4" />
+              <span className="text-xs uppercase tracking-widest">Zapsat příjem</span>
+            </button>
+            <button
+              onClick={() => setIsAddingExpense(true)}
+              className="flex-1 btn-bento-primary bg-rose-500 hover:bg-rose-600 shadow-lg shadow-rose-500/10"
+            >
+              <TrendingDown className="w-4 h-4" />
+              <span className="text-xs uppercase tracking-widest">Zapsat výdaj</span>
+            </button>
+          </div>
+        ) : (
+          <div className="md:col-span-2 bg-amber-50 border border-amber-200 rounded-3xl p-6 flex items-center justify-center text-center">
+            <p className="text-xs font-bold text-amber-800 flex items-center gap-2">
+              <Eye className="w-5 h-5 text-amber-600 shrink-0" />
+              <span>Pouze pro čtení — operace v pokladně jsou zakázány.</span>
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Transaction History */}

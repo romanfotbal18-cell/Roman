@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, doc, writeBatch } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { Group, Period, Member, FineTemplate, OperationType, MemberGroup } from '../types';
-import { handleFirestoreError, cn } from '../utils';
-import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown } from 'lucide-react';
+import { handleFirestoreError, cn, getUserRole } from '../utils';
+import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface RecordFineProps {
@@ -13,6 +13,9 @@ interface RecordFineProps {
 }
 
 export default function RecordFine({ group, period, onSuccess }: RecordFineProps) {
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
+
   const [members, setMembers] = useState<Member[]>([]);
   const [templates, setTemplates] = useState<FineTemplate[]>([]);
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
@@ -495,13 +498,20 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
               </div>
             </div>
 
+            {isReadOnly && (
+              <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4 text-center flex items-center justify-center gap-2">
+                <Eye className="w-4 h-4 text-amber-600" />
+                Jste v režimu Pouze pro čtení. Nemáte oprávnění zapisovat pokuty.
+              </p>
+            )}
+
             <button
               onClick={handleRecord}
-              disabled={selectedMemberIds.length === 0 || calculateAmount() <= 0 || isSubmitting}
+              disabled={isReadOnly || selectedMemberIds.length === 0 || calculateAmount() <= 0 || isSubmitting}
               className="btn-bento-primary w-full py-4 text-sm font-bold shadow-xl shadow-bento-accent/10 disabled:opacity-40"
             >
               {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              Zapsat do systému
+              {isReadOnly ? 'Zápis zakázán (Čtenář)' : 'Zapsat do systému'}
             </button>
           </div>
         </div>

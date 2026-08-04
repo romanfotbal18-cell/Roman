@@ -1,5 +1,30 @@
 import { auth } from './firebase';
-import { OperationType, FirestoreErrorInfo } from './types';
+import { OperationType, FirestoreErrorInfo, Group, UserRole } from './types';
+
+export function getUserRole(group: Group, userEmail?: string | null, userUid?: string | null): UserRole {
+  const currentUid = userUid || auth.currentUser?.uid;
+  const currentEmail = (userEmail || auth.currentUser?.email || '').toLowerCase();
+
+  if (!currentUid && !currentEmail) return 'viewer';
+  if (group.ownerId === currentUid) return 'owner';
+
+  if (group.sharedUsers && Array.isArray(group.sharedUsers)) {
+    const match = group.sharedUsers.find(
+      u => (currentUid && u.uid === currentUid) || (currentEmail && u.email.toLowerCase() === currentEmail)
+    );
+    if (match) {
+      return match.role;
+    }
+  }
+
+  if (currentEmail && group.allowedEmails && Array.isArray(group.allowedEmails)) {
+    if (group.allowedEmails.some(e => e.toLowerCase() === currentEmail)) {
+      return 'editor';
+    }
+  }
+
+  return 'viewer';
+}
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {

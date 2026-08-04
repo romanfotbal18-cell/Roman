@@ -1,7 +1,21 @@
+export type UserRole = 'owner' | 'editor' | 'viewer';
+
+export interface GroupMemberRole {
+  email: string;
+  uid?: string;
+  role: 'editor' | 'viewer';
+  addedAt?: number;
+}
+
 export interface Group {
   id: string;
   name: string;
   ownerId: string;
+  ownerEmail?: string;
+  memberUids?: string[];
+  allowedEmails?: string[];
+  sharedUsers?: GroupMemberRole[];
+  createdAt?: any;
 }
 
 export interface Member {

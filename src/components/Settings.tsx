@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch, getDocs, where, setDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event } from '../types';
-import { handleFirestoreError, cn } from '../utils';
-import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake } from 'lucide-react';
+import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole } from '../types';
+import { handleFirestoreError, cn, getUserRole } from '../utils';
+import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -22,6 +22,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { SortableItem } from './SortableItem';
+import ShareModal from './ShareModal';
 
 interface SettingsProps {
   group: Group;
@@ -35,7 +36,11 @@ export default function Settings({ group, period }: SettingsProps) {
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events'>('templates');
+  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'sharing'>('templates');
+
+  const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
+  const isReadOnly = userRole === 'viewer';
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
   // Event Modal State
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
@@ -727,6 +732,19 @@ export default function Settings({ group, period }: SettingsProps) {
         >
           <CalendarIcon className="w-4 h-4" />
           Události
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('sharing');
+            setSelectedIds(new Set());
+          }}
+          className={cn(
+            "flex items-center gap-2 px-6 py-2.5 rounded-lg font-bold text-[11px] uppercase tracking-wider transition-all",
+            activeTab === 'sharing' ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
+          )}
+        >
+          <Share2 className="w-4 h-4 text-blue-600" />
+          Sdílení kasy
         </button>
       </div>
 
@@ -1426,6 +1444,44 @@ export default function Settings({ group, period }: SettingsProps) {
         </div>
       )}
 
+      {activeTab === 'sharing' && (
+        <div className="space-y-6">
+          <div className="flex items-center gap-2 px-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
+            <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Sdílení kasy a přístupová práva</h2>
+          </div>
+
+          <div className="bg-white border border-bento-card-border rounded-[2.5rem] p-8 shadow-sm">
+            <div className="max-w-2xl space-y-6">
+              <p className="text-sm text-slate-500 leading-relaxed">
+                Můžete nasdílet celou kasu <strong>{group.name}</strong> dalším lidem (podle jejich e-mailového účtu Google).
+                Určete, zda mohou kasu běžně spravovat a zapisovat do ní (<strong>Editor</strong>) nebo pouze vše prohlížet a rozklikávat bez možností úprav (<strong>Čtenář</strong>).
+              </p>
+
+              <div className="p-6 bg-slate-50 border border-slate-200 rounded-3xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold">
+                    <Share2 className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-slate-900">Správa sdílení a rolí</h3>
+                    <p className="text-xs text-slate-500">Přidat uživatele, změnit role nebo odebrat přístup</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsShareModalOpen(true)}
+                  className="bg-blue-600 text-white font-black py-3.5 px-6 rounded-2xl text-xs uppercase tracking-wider hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/10 flex items-center gap-2 whitespace-nowrap"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  Spravovat sdílení
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Item Modal (Unified for Members/Templates/Groups/Events) */}
       <AnimatePresence>
         {(isMemberModalOpen || isTemplateModalOpen || isGroupModalOpen || isEventModalOpen) && (
@@ -1950,6 +2006,16 @@ export default function Settings({ group, period }: SettingsProps) {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Share Modal */}
+      {isShareModalOpen && auth.currentUser && (
+        <ShareModal
+          group={group}
+          user={auth.currentUser}
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
+        />
+      )}
     </div>
   );
 }
