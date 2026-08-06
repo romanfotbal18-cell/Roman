@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, where, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Group, Period, Member, Fine, Payment, OperationType } from '../types';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, reconcileOverpaymentsForMember } from '../utils';
 import { Search, ChevronRight, CreditCard, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -133,6 +133,8 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
           remaining = 0;
         }
       }
+
+      await reconcileOverpaymentsForMember(db, group.id, period.id, selectedMember.id);
 
       onSuccess();
     } catch (error) {

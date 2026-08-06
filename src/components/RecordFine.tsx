@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, doc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Member, FineTemplate, OperationType, MemberGroup } from '../types';
-import { handleFirestoreError, getCurrencySymbol, cn, getUserRole } from '../utils';
+import { handleFirestoreError, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
 import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -194,6 +194,12 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       });
 
       await batch.commit();
+
+      // Automatically absorb fines if members have overpayments
+      for (const memberId of selectedMemberIds) {
+        await reconcileOverpaymentsForMember(db, group.id, period.id, memberId);
+      }
+
       setSelectedMemberIds([]);
       setSelectedTemplate(null);
       setCustomReason('');

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -198,6 +198,21 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
     });
     setStats(prev => ({ ...prev, totalDebt: debt }));
   }, [fines, members]);
+
+  useEffect(() => {
+    if (!members.length || !fines.length || !payments.length) return;
+    
+    members.forEach(member => {
+      const memberPayments = payments.filter(p => p.memberId === member.id).reduce((s, p) => s + (p.amount || 0), 0);
+      const memberFines = fines.filter(f => f.memberId === member.id);
+      const memberPaidFines = memberFines.reduce((s, f) => s + (f.paidAmount || 0), 0);
+      const hasUnpaidFines = memberFines.some(f => !f.paid);
+
+      if (memberPayments > memberPaidFines && hasUnpaidFines) {
+        reconcileOverpaymentsForMember(db, group.id, period.id, member.id);
+      }
+    });
+  }, [members, fines, payments, group.id, period.id]);
 
   // Chart Data Calculations
   const balanceTrendData = useMemo(() => {
@@ -514,15 +529,15 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const statsData = useMemo(() => {
     const globalReset = currentPeriod.statsResetAt || 0;
 
-    // 1. Top 3 Sponsors (Most paid in fines)
+    // 1. Top 3 Sponsors (Total financial contributions/payments made)
     const paidByMember: Record<string, number> = {};
     const sponsorsReset = Math.max(currentPeriod.sponsorsResetAt || 0, globalReset);
     
-    fines
-      .filter(f => f.createdAt > sponsorsReset)
-      .forEach(f => {
-        if (f.paidAmount && f.paidAmount > 0) {
-          paidByMember[f.memberId] = (paidByMember[f.memberId] || 0) + f.paidAmount;
+    payments
+      .filter(p => p.createdAt > sponsorsReset)
+      .forEach(p => {
+        if (p.amount && p.amount > 0) {
+          paidByMember[p.memberId] = (paidByMember[p.memberId] || 0) + p.amount;
         }
       });
     const topSponsors = Object.entries(paidByMember)
@@ -647,7 +662,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       : null;
 
     return { topSponsors, topDebtors, violationChartData, monthlyLeaderboard, lastMonthLeader, lastMonthRank, streaks, overallChampion };
-  }, [fines, members, currentPeriod]);
+  }, [fines, payments, members, currentPeriod]);
 
   const calculateDaysRemaining = (dateStr: string) => {
     const today = new Date();
@@ -1179,7 +1194,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="text-lg font-black text-bento-text-main">Top 3 Štědří plátci</h4>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Členové, kteří nejvíce naplnili kasu (zaplacené pokuty)</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Členové, kteří celkově přispěli nejvíce finančních prostředků</p>
                 </div>
                 <Medal className="w-6 h-6 text-amber-500" />
               </div>

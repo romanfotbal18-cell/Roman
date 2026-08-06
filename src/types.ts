@@ -82,7 +82,7 @@ export interface Payment {
   id: string;
   memberId: string;
   amount: number;
-  paymentMethod: 'cash' | 'bank';
+  paymentMethod: 'cash' | 'bank' | 'purchase';
   note?: string;
   periodId: string;
   createdAt: number;

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, orderBy, getDoc, writeBatch, getDocs, where, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member } from '../types';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
 import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -193,8 +193,42 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
       const batch = writeBatch(db);
 
+      let affectedMemberId: string | null = null;
+
       if (editingTransaction) {
         batch.set(doc(db, transactionsPath, editingTransaction.id), transactionData, { merge: true });
+
+        // Handle fine payment sync if linked to a Payment record
+        if (editingTransaction.paymentId) {
+          const paymentRef = doc(db, `groups/${group.id}/periods/${period.id}/payments`, editingTransaction.paymentId);
+          const paymentSnap = await getDoc(paymentRef);
+          if (paymentSnap.exists()) {
+            const paymentData = paymentSnap.data() as Payment;
+            affectedMemberId = paymentData.memberId;
+            const newAbsAmount = Math.abs(finalAmount);
+
+            batch.update(paymentRef, {
+              amount: newAbsAmount,
+              note: finalNote || paymentData.note || ''
+            });
+
+            const linkedTransQuery = query(
+              collection(db, `groups/${group.id}/periods/${period.id}/transactions`),
+              where('paymentId', '==', editingTransaction.paymentId)
+            );
+            const linkedTransSnap = await getDocs(linkedTransQuery);
+            linkedTransSnap.docs.forEach(d => {
+              if (d.id !== editingTransaction.id) {
+                const data = d.data();
+                const sign = data.type === 'expense' ? -1 : 1;
+                batch.update(d.ref, {
+                  amount: sign * newAbsAmount,
+                  note: finalNote || data.note || ''
+                });
+              }
+            });
+          }
+        }
 
         // Handle fine sync if it was or is a debt expense
         if (editingTransaction.isDebtExpense || isDebtExpense) {
@@ -255,6 +289,18 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
       await batch.commit();
 
+      if (affectedMemberId) {
+        await reconcileOverpaymentsForMember(db, group.id, period.id, affectedMemberId);
+      }
+
+      if (isDebtExpense && processedDebtDetails) {
+        for (const debt of processedDebtDetails) {
+          if (debt.amount > 0) {
+            await reconcileOverpaymentsForMember(db, group.id, period.id, debt.memberId);
+          }
+        }
+      }
+
       setAmount('');
       setNote('');
       setCategory('');
@@ -285,40 +331,24 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
       const transcRef = doc(db, `groups/${group.id}/periods/${period.id}/transactions`, transactionId);
       batch.delete(transcRef);
 
-      if (transaction.source === 'fine_payment' && transaction.paymentId) {
+      let memberIdToReconcile: string | null = null;
+
+      if (transaction.paymentId) {
+        // Delete all transactions linked to this payment (e.g. income + expense pair)
+        const linkedTransQuery = query(
+          collection(db, `groups/${group.id}/periods/${period.id}/transactions`),
+          where('paymentId', '==', transaction.paymentId)
+        );
+        const linkedTransSnap = await getDocs(linkedTransQuery);
+        linkedTransSnap.docs.forEach(d => batch.delete(d.ref));
+
         // Find corresponding payment
         const paymentRef = doc(db, `groups/${group.id}/periods/${period.id}/payments`, transaction.paymentId);
         const paymentSnap = await getDoc(paymentRef);
         
         if (paymentSnap.exists()) {
           const paymentData = paymentSnap.data() as Payment;
-          const memberId = paymentData.memberId;
-          const revertAmount = paymentData.amount;
-
-          // Revert fines
-          const finesRef = collection(db, `groups/${group.id}/periods/${period.id}/fines`);
-          const finesQuery = query(finesRef, where('memberId', '==', memberId));
-          const finesSnap = await getDocs(finesQuery);
-          const memberFines = finesSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Fine[];
-
-          // Reverse chronological revert (from newest paid back to oldest)
-          let remainingToRevert = revertAmount;
-          const sortedFines = memberFines.sort((a, b) => b.createdAt - a.createdAt);
-
-          for (const fine of sortedFines) {
-            if (remainingToRevert <= 0) break;
-            
-            const currentPaid = fine.paidAmount || 0;
-            if (currentPaid > 0) {
-              const toSubtract = Math.min(currentPaid, remainingToRevert);
-              batch.set(doc(db, `groups/${group.id}/periods/${period.id}/fines`, fine.id), {
-                paidAmount: currentPaid - toSubtract,
-                paid: false // Reverting always makes it unpaid 
-              }, { merge: true });
-              remainingToRevert -= toSubtract;
-            }
-          }
-          
+          memberIdToReconcile = paymentData.memberId;
           batch.delete(paymentRef);
         }
       }
@@ -334,6 +364,10 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
       }
 
       await batch.commit();
+
+      if (memberIdToReconcile) {
+        await reconcileOverpaymentsForMember(db, group.id, period.id, memberIdToReconcile);
+      }
       setViewingTransaction(null);
       setDeleteConfirmId(null);
     } catch (err) {

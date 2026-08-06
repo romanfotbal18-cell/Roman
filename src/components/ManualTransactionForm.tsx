@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, addDoc, query, orderBy, onSnapshot, writeBatch, doc, getDocs, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Group, Period, OperationType, Member } from '../types';
-import { handleFirestoreError, getCurrencySymbol, cn } from '../utils';
+import { handleFirestoreError, getCurrencySymbol, cn, reconcileOverpaymentsForMember } from '../utils';
 import { Calendar, Save, X, Plus, Users } from 'lucide-react';
 
 interface ManualTransactionFormProps {
@@ -124,6 +124,15 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
       }
 
       await batch.commit();
+
+      if (isDebtExpense && processedDebtDetails) {
+        for (const debt of processedDebtDetails) {
+          if (debt.amount > 0) {
+            await reconcileOverpaymentsForMember(db, group.id, period.id, debt.memberId);
+          }
+        }
+      }
+
       onSuccess();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'transactions');
