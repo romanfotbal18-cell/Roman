@@ -51,8 +51,42 @@ export function cn(...classes: (string | boolean | undefined)[]) {
   return classes.filter(Boolean).join(' ');
 }
 
-export function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(amount);
+export function getCurrencySymbol(currencyCode: string = 'CZK'): string {
+  const code = (currencyCode || 'CZK').toUpperCase().trim();
+  switch (code) {
+    case 'CZK':
+    case 'KC':
+    case 'KČ':
+      return 'Kč';
+    case 'EUR':
+      return '€';
+    case 'USD':
+      return '$';
+    case 'GBP':
+      return '£';
+    case 'PLN':
+      return 'zł';
+    case 'CHF':
+      return 'CHF';
+    case 'HUF':
+      return 'Ft';
+    default:
+      return code || 'Kč';
+  }
+}
+
+export function formatCurrency(amount: number, currencyCode: string = 'CZK') {
+  const code = (currencyCode || 'CZK').toUpperCase().trim();
+  try {
+    return new Intl.NumberFormat('cs-CZ', {
+      style: 'currency',
+      currency: code,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch (e) {
+    const symbol = getCurrencySymbol(currencyCode);
+    return `${amount.toLocaleString('cs-CZ')} ${symbol}`;
+  }
 }
 
 export function formatDate(timestamp: number) {

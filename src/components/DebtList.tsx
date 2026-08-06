@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, writeBatch, deleteDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
-import { handleFirestoreError, formatCurrency, cn, getUserRole } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole } from '../utils';
 import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -37,12 +37,12 @@ export default function DebtList({ group, period }: DebtListProps) {
         const unpaidMemberFines = fines.filter(f => f.memberId === member.id && !f.paid);
         const descriptions = unpaidMemberFines.map(f => {
           const remaining = f.amount - (f.paidAmount || 0);
-          return `${f.reason} (${formatCurrency(remaining)})`;
+          return `${f.reason} (${formatCurrency(remaining, group.currency)})`;
         }).join(', ');
 
         return {
           'Jméno': member.name,
-          'Částka (Kč)': balance,
+          [`Částka (${getCurrencySymbol(group.currency)})`]: balance,
           'Stav': balance < 0 ? 'Přeplatek (Nabito)' : 'Dluh',
           'Rozpis dluhů / Poznámka': balance < 0 ? 'Předplaceno na budoucí pokuty' : descriptions
         };
@@ -367,7 +367,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                       ? "bg-rose-50 text-rose-600" 
                       : (debt < 0 ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600")
                   )}>
-                    {debt < 0 ? formatCurrency(Math.abs(debt)) : formatCurrency(debt)}
+                    {debt < 0 ? formatCurrency(Math.abs(debt), group.currency) : formatCurrency(debt, group.currency)}
                   </div>
                   <ChevronRight className={cn(
                     "w-4 h-4 transition-transform",
@@ -446,15 +446,15 @@ export default function DebtList({ group, period }: DebtListProps) {
                               </div>
                               <span className="text-[10px] font-semibold text-bento-text-muted mt-0.5">
                                 {new Date(fine.createdAt).toLocaleDateString('cs-CZ')}
-                                {isPartial && ` • Uhrazeno: ${formatCurrency(fine.paidAmount)}`}
+                                {isPartial && ` • Uhrazeno: ${formatCurrency(fine.paidAmount, group.currency)}`}
                               </span>
                             </div>
                             <div className="flex items-center gap-3">
                               <div className="flex flex-col items-end">
                                 <span className="font-black text-sm text-rose-600">
-                                  {formatCurrency(remainingDebt)}
+                                  {formatCurrency(remainingDebt, group.currency)}
                                 </span>
-                                {isPartial && <span className="text-[9px] font-bold text-slate-400">Zbývá z {formatCurrency(fine.amount)}</span>}
+                                {isPartial && <span className="text-[9px] font-bold text-slate-400">Zbývá z {formatCurrency(fine.amount, group.currency)}</span>}
                               </div>
                               
                               {!isReadOnly && (
@@ -507,8 +507,8 @@ export default function DebtList({ group, period }: DebtListProps) {
                           getMemberDebt(selectedMember.id) < 0 ? "text-indigo-600" : "text-bento-text-main"
                         )}>
                           {getMemberDebt(selectedMember.id) < 0 
-                            ? formatCurrency(Math.abs(getMemberDebt(selectedMember.id))) 
-                            : formatCurrency(getMemberDebt(selectedMember.id))}
+                            ? formatCurrency(Math.abs(getMemberDebt(selectedMember.id)), group.currency) 
+                            : formatCurrency(getMemberDebt(selectedMember.id), group.currency)}
                         </p>
                       </div>
                       {getMemberDebt(selectedMember.id) > 0 ? (
@@ -578,7 +578,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                             "text-xs font-black tracking-tight",
                             item.histType === 'payment' ? "text-emerald-600" : "text-slate-400"
                           )}>
-                            {item.histType === 'payment' ? '+' : ''}{formatCurrency(item.amount)}
+                            {item.histType === 'payment' ? '+' : ''}{formatCurrency(item.amount, group.currency)}
                           </span>
                         </div>
                       ))}
@@ -636,7 +636,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                       value={paymentAmount}
                       onChange={(e) => setPaymentAmount(e.target.value)}
                     />
-                    <span className="absolute right-5 top-1/2 -translate-y-1/2 font-bold text-slate-400">Kč</span>
+                    <span className="absolute right-5 top-1/2 -translate-y-1/2 font-bold text-slate-400">{getCurrencySymbol(group.currency)}</span>
                   </div>
                 </div>
 
@@ -745,7 +745,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Sazba (Kč)</label>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Sazba ({getCurrencySymbol(group.currency)})</label>
                     <input
                       type="number"
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-bento-accent/20"
@@ -759,7 +759,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Celková částka (Kč)</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Celková částka ({getCurrencySymbol(group.currency)})</label>
                   <input
                     type="number"
                     className="w-full px-4 py-3 bg-slate-100 border border-slate-200 rounded-xl text-xl font-black text-rose-500 focus:outline-none"
@@ -803,7 +803,7 @@ export default function DebtList({ group, period }: DebtListProps) {
                 <Trash2 className="w-8 h-8" />
               </div>
               <h3 className="text-xl font-bold text-bento-text-main mb-2">Smazat pokutu?</h3>
-              <p className="text-sm text-bento-text-muted mb-8">Opravdu chcete smazat tento dluh v hodnotě {formatCurrency(isDeletingFine.amount)}?</p>
+              <p className="text-sm text-bento-text-muted mb-8">Opravdu chcete smazat tento dluh v hodnotě {formatCurrency(isDeletingFine.amount, group.currency)}?</p>
 
               <div className="grid grid-cols-2 gap-3">
                 <button

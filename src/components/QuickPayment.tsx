@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, where, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Group, Period, Member, Fine, Payment, OperationType } from '../types';
-import { handleFirestoreError, formatCurrency, cn } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn } from '../utils';
 import { Search, ChevronRight, CreditCard, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -175,7 +175,7 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
                     <span className="font-bold text-sm text-slate-900">{member.name}</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-black text-sm text-rose-600">{formatCurrency(getMemberDebt(member.id))}</span>
+                    <span className="font-black text-sm text-rose-600">{formatCurrency(getMemberDebt(member.id), group.currency)}</span>
                     <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500 translate-x-0 group-hover:translate-x-1 transition-all" />
                   </div>
                 </button>
@@ -209,7 +209,7 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
 
           <div className="space-y-4">
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Částka k zaplacení (Kč)</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Částka k zaplacení ({getCurrencySymbol(group.currency)})</label>
               <div className="relative">
                 <input
                   type="number"
@@ -218,9 +218,9 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                 />
-                <span className="absolute right-5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-xl">Kč</span>
+                <span className="absolute right-5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-xl">{getCurrencySymbol(group.currency)}</span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-2 font-bold italic">Dluh člena: {formatCurrency(getMemberDebt(selectedMember.id))}</p>
+              <p className="text-[10px] text-slate-400 mt-2 font-bold italic">Dluh člena: {formatCurrency(getMemberDebt(selectedMember.id), group.currency)}</p>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

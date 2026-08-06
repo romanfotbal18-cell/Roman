@@ -85,7 +85,7 @@ service cloud.firestore {
           (isUserInGroupData(resource.data) || isUserInGroupData(incoming())) &&
           incoming().ownerId == resource.data.ownerId
         )
-      ) && incoming().name is string && incoming().name.size() <= 100;
+      ) && (!('name' in incoming()) || (incoming().name is string && incoming().name.size() <= 100));
 
       allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
 

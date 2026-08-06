@@ -5,7 +5,8 @@
 
 import { useState, useEffect } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, signInWithGoogle, logout } from './firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, auth, signInWithGoogle, logout } from './firebase';
 import { Group, Period } from './types';
 import Login from './components/Login';
 import GroupSelector from './components/GroupSelector';
@@ -35,6 +36,22 @@ export default function App() {
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!selectedGroup?.id) return;
+    const unsub = onSnapshot(
+      doc(db, 'groups', selectedGroup.id),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setSelectedGroup({ id: snapshot.id, ...snapshot.data() } as Group);
+        }
+      },
+      (err) => {
+        console.error('Error listening to group changes:', err);
+      }
+    );
+    return () => unsub();
+  }, [selectedGroup?.id]);
 
   if (loading) {
     return (

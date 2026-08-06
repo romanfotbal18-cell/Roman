@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch, getDocs, where, setDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole } from '../types';
-import { handleFirestoreError, cn, getUserRole } from '../utils';
-import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut } from 'lucide-react';
+import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency } from '../utils';
+import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -41,6 +41,26 @@ export default function Settings({ group, period }: SettingsProps) {
   const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
   const isReadOnly = userRole === 'viewer';
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  // Currency Settings
+  const currentCurrency = group.currency || 'CZK';
+  const [isUpdatingCurrency, setIsUpdatingCurrency] = useState(false);
+
+  const handleCurrencyChange = async (newCurrency: string) => {
+    if (isReadOnly || isUpdatingCurrency) return;
+    const cleanCurrency = newCurrency.trim().toUpperCase();
+    if (!cleanCurrency) return;
+    setIsUpdatingCurrency(true);
+    try {
+      await updateDoc(doc(db, 'groups', group.id), {
+        currency: cleanCurrency
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}`);
+    } finally {
+      setIsUpdatingCurrency(false);
+    }
+  };
 
   // Event Modal State
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
@@ -752,6 +772,46 @@ export default function Settings({ group, period }: SettingsProps) {
 
       {activeTab === 'templates' && (
         <div className="space-y-6">
+          {/* Currency Settings Card (Compact) */}
+          <div className="bg-white px-4 py-3 rounded-xl border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-2 bg-amber-50 text-amber-600 rounded-xl border border-amber-100 shrink-0">
+                <Coins className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-bento-text-main truncate">
+                    Měna pokladny
+                  </h3>
+                  {isUpdatingCurrency && <Loader2 className="w-3 h-3 animate-spin text-indigo-500 shrink-0" />}
+                </div>
+                <p className="text-[11px] text-slate-500 font-medium truncate">
+                  Sazebník, zůstatek a transakce
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+              <select
+                disabled={isReadOnly || isUpdatingCurrency}
+                value={currentCurrency}
+                onChange={(e) => handleCurrencyChange(e.target.value)}
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60"
+              >
+                <option value="CZK">🇨🇿 CZK (Kč)</option>
+                <option value="EUR">🇪🇺 EUR (€)</option>
+                <option value="USD">🇺🇸 USD ($)</option>
+                <option value="GBP">🇬🇧 GBP (£)</option>
+                <option value="PLN">🇵🇱 PLN (zł)</option>
+                <option value="CHF">🇨🇭 CHF</option>
+                <option value="HUF">🇭🇺 HUF (Ft)</option>
+                {!['CZK', 'EUR', 'USD', 'GBP', 'PLN', 'CHF', 'HUF'].includes(currentCurrency) && (
+                  <option value={currentCurrency}>{currentCurrency} ({getCurrencySymbol(currentCurrency)})</option>
+                )}
+              </select>
+            </div>
+          </div>
+
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 px-1">
             <div className="flex-1 space-y-4">
               <div className="flex items-center gap-2">
@@ -833,7 +893,7 @@ export default function Settings({ group, period }: SettingsProps) {
                         <div className="text-left min-w-0 pr-2">
                           <h3 className="font-bold text-bento-text-main text-[13px] leading-tight truncate">{t.name}</h3>
                           <p className="text-bento-accent font-black text-[10px] tracking-tight flex items-center gap-2">
-                            {t.amount} Kč{t.type === 'dynamic' ? ` / ${t.unit}` : ''}
+                            {t.amount} {getCurrencySymbol(currentCurrency)}{t.type === 'dynamic' ? ` / ${t.unit}` : ''}
                             <GripVertical className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
                           </p>
                         </div>
@@ -1606,7 +1666,7 @@ export default function Settings({ group, period }: SettingsProps) {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">
-                        {templateType === 'fixed' ? 'Sazba (Kč)' : 'Kč/jedn.'}
+                        {templateType === 'fixed' ? `Sazba (${getCurrencySymbol(currentCurrency)})` : `${getCurrencySymbol(currentCurrency)}/jedn.`}
                       </label>
                       <input
                         type="number"

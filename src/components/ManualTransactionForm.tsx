@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, addDoc, query, orderBy, onSnapshot, writeBatch, doc, getDocs, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Group, Period, OperationType, Member } from '../types';
-import { handleFirestoreError, cn } from '../utils';
+import { handleFirestoreError, getCurrencySymbol, cn } from '../utils';
 import { Calendar, Save, X, Plus, Users } from 'lucide-react';
 
 interface ManualTransactionFormProps {
@@ -183,7 +183,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
 
       <div className="bg-slate-50 p-4 rounded-[2rem] border border-slate-100 mb-2">
         <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">
-          {isSummary || isDebtExpense ? 'Celková částka (Kč)' : 'Částka (Kč)'}
+          {isSummary || isDebtExpense ? `Celková částka (${getCurrencySymbol(group.currency)})` : `Částka (${getCurrencySymbol(group.currency)})`}
         </label>
         <div className="relative">
           <input
@@ -194,7 +194,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
             readOnly={isSummary || isDebtExpense}
             onChange={(e) => setAmount(e.target.value)}
           />
-          <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">Kč</span>
+          <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">{getCurrencySymbol(group.currency)}</span>
         </div>
       </div>
 
@@ -227,7 +227,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
           <div className="space-y-3">
             {splitMode === 'equal' && (
               <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-                <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Částka na člena (Kč)</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Částka na člena ({getCurrencySymbol(group.currency)})</label>
                 <input
                   type="number"
                   placeholder="0"
@@ -252,7 +252,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
             )}
 
             <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-              <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Příspěvek z kasy (Kč)</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Příspěvek z kasy ({getCurrencySymbol(group.currency)})</label>
               <input
                 type="number"
                 placeholder="0"
@@ -380,7 +380,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
                           setAmount((totalDebt + portion).toString());
                         }}
                       />
-                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-indigo-300">Kč</span>
+                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-indigo-300">{getCurrencySymbol(group.currency)}</span>
                     </div>
                   </div>
                 ))}

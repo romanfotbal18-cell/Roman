@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { handleFirestoreError, formatCurrency, formatDate, cn, getUserRole } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole } from '../utils';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -686,7 +686,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                   {goalProgress.toFixed(0)}%
                 </div>
                 <div className="text-[10px] font-bold text-bento-text-muted uppercase tracking-widest">
-                  {formatCurrency(stats.balance)} / {formatCurrency(activeGoal.targetAmount)}
+                  {formatCurrency(stats.balance, group.currency)} / {formatCurrency(activeGoal.targetAmount, group.currency)}
                 </div>
               </div>
             </div>
@@ -745,7 +745,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             <div className="flex flex-col gap-1">
               <span className="text-[10px] uppercase font-black tracking-[0.2em] text-white/50">Pokladna</span>
               <div className="text-2xl font-black tracking-tighter">
-                {formatCurrency(stats.balance)}
+                {formatCurrency(stats.balance, group.currency)}
               </div>
             </div>
             <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center backdrop-blur-md">
@@ -775,7 +775,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             <div className="flex flex-col gap-1">
               <span className="text-[10px] uppercase font-black tracking-[0.2em] text-rose-400">Dluhy</span>
               <div className="text-2xl font-black tracking-tighter text-rose-600">
-                {formatCurrency(stats.totalDebt)}
+                {formatCurrency(stats.totalDebt, group.currency)}
               </div>
             </div>
             <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center">
@@ -860,7 +860,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
           <span className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Příjmy</span>
           <div className="flex items-center gap-2 mt-4">
             <TrendingUp className="w-4 h-4 text-emerald-500" />
-            <span className="text-3xl font-black tracking-tighter text-emerald-600 leading-none">{formatCurrency(stats.totalIncome)}</span>
+            <span className="text-3xl font-black tracking-tighter text-emerald-600 leading-none">{formatCurrency(stats.totalIncome, group.currency)}</span>
           </div>
         </motion.div>
 
@@ -879,7 +879,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
           <span className="text-[10px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Výdaje</span>
           <div className="flex items-center gap-2 mt-4">
             <TrendingDown className="w-4 h-4 text-rose-500" />
-            <span className="text-3xl font-black tracking-tighter text-rose-500 leading-none">{formatCurrency(stats.totalExpense)}</span>
+            <span className="text-3xl font-black tracking-tighter text-rose-500 leading-none">{formatCurrency(stats.totalExpense, group.currency)}</span>
           </div>
         </motion.div>
 
@@ -948,7 +948,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           <YAxis hide />
                           <Tooltip 
                             contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: any) => [formatCurrency(value), 'Zůstatek']}
+                            formatter={(value: any) => [formatCurrency(value, group.currency), 'Zůstatek']}
                           />
                           <Area type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorBalance)" />
                         </AreaChart>
@@ -957,7 +957,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                     <div className="space-y-4">
                       <div className="p-4 bg-slate-50 rounded-2xl">
                         <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Počáteční stav</span>
-                        <p className="text-lg font-black text-bento-text-main">{formatCurrency(balanceTrendData[0]?.balance || 0)}</p>
+                        <p className="text-lg font-black text-bento-text-main">{formatCurrency(balanceTrendData[0]?.balance || 0, group.currency)}</p>
                       </div>
                       <div className="p-4 bg-slate-50 rounded-2xl">
                         <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Transakcí celkem</span>
@@ -965,7 +965,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       </div>
                       <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-2xl">
                         <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 block mb-1">Finální zůstatek</span>
-                        <p className="text-lg font-black text-blue-600">{formatCurrency(stats.balance)}</p>
+                        <p className="text-lg font-black text-blue-600">{formatCurrency(stats.balance, group.currency)}</p>
                       </div>
                     </div>
                   </div>
@@ -1009,12 +1009,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                               <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
                               <span className="text-sm font-bold text-bento-text-main group-hover:text-bento-accent">{item.name}</span>
                             </div>
-                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value)}</span>
+                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value, group.currency)}</span>
                           </button>
                         ))}
                         <div className="pt-3 border-t border-bento-card-border flex justify-between items-center px-3">
                           <span className="text-xs font-bold text-bento-text-muted">Celkem</span>
-                          <span className="text-base font-black text-emerald-600">{formatCurrency(stats.totalIncome)}</span>
+                          <span className="text-base font-black text-emerald-600">{formatCurrency(stats.totalIncome, group.currency)}</span>
                         </div>
                       </div>
                     </div>
@@ -1059,12 +1059,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                               <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
                               <span className="text-sm font-bold text-bento-text-main group-hover:text-bento-accent">{item.name}</span>
                             </div>
-                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value)}</span>
+                            <span className="text-sm font-black text-bento-text-main">{formatCurrency(item.value, group.currency)}</span>
                           </button>
                         ))}
                         <div className="pt-3 border-t border-bento-card-border flex justify-between items-center px-3">
                           <span className="text-xs font-bold text-bento-text-muted">Celkem</span>
-                          <span className="text-base font-black text-rose-600">{formatCurrency(stats.totalExpense)}</span>
+                          <span className="text-base font-black text-rose-600">{formatCurrency(stats.totalExpense, group.currency)}</span>
                         </div>
                       </div>
                     </div>
@@ -1087,7 +1087,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           <YAxis hide />
                           <Tooltip 
                             contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: any) => [formatCurrency(value), 'Celkový dluh']}
+                            formatter={(value: any) => [formatCurrency(value, group.currency), 'Celkový dluh']}
                           />
                           <Area type="monotone" dataKey="amount" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorDebt)" />
                         </AreaChart>
@@ -1195,7 +1195,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       <p className="text-sm font-black text-bento-text-main truncate w-24">
                         {statsData.topSponsors[1].member?.name}
                       </p>
-                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[1].amount)}</p>
+                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[1].amount, group.currency)}</p>
                     </div>
                     <div className="w-20 h-24 bg-slate-100 rounded-t-xl" />
                   </div>
@@ -1212,7 +1212,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       <p className="text-base font-black text-bento-text-main truncate w-32">
                         {statsData.topSponsors[0].member?.name}
                       </p>
-                      <p className="text-sm font-black text-amber-600">{formatCurrency(statsData.topSponsors[0].amount)}</p>
+                      <p className="text-sm font-black text-amber-600">{formatCurrency(statsData.topSponsors[0].amount, group.currency)}</p>
                     </div>
                     <div className="w-24 h-32 bg-amber-50 rounded-t-2xl border-x border-t border-amber-100" />
                   </div>
@@ -1228,7 +1228,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       <p className="text-sm font-black text-bento-text-main truncate w-24">
                         {statsData.topSponsors[2].member?.name}
                       </p>
-                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[2].amount)}</p>
+                      <p className="text-xs font-bold text-slate-400">{formatCurrency(statsData.topSponsors[2].amount, group.currency)}</p>
                     </div>
                     <div className="w-20 h-16 bg-orange-50/50 rounded-t-xl" />
                   </div>
@@ -1274,7 +1274,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-black text-rose-600">{formatCurrency(debtor.amount)}</p>
+                      <p className="text-sm font-black text-rose-600">{formatCurrency(debtor.amount, group.currency)}</p>
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Aktuální dluh</p>
                     </div>
                   </div>
@@ -1359,7 +1359,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                     <div>
                       <span className="text-[9px] font-black text-indigo-200 uppercase tracking-widest block mb-0.5">Naposledy vyhodnoceno</span>
                       <h5 className="text-base font-black truncate">{new Date(statsData.lastMonthLeader.month).toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })}</h5>
-                      <p className="text-[10px] font-bold text-indigo-100/70">{statsData.lastMonthLeader.member?.name} • {formatCurrency(statsData.lastMonthLeader.amount)}</p>
+                      <p className="text-[10px] font-bold text-indigo-100/70">{statsData.lastMonthLeader.member?.name} • {formatCurrency(statsData.lastMonthLeader.amount, group.currency)}</p>
                     </div>
                   </div>
                   <div className="text-center px-4 border-l border-white/20">
@@ -1384,7 +1384,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-black text-indigo-600">{formatCurrency(lead.amount)}</div>
+                      <div className="text-sm font-black text-indigo-600">{formatCurrency(lead.amount, group.currency)}</div>
                     </div>
                   </div>
                 ))}
@@ -1602,7 +1602,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                         "text-sm font-black tracking-tighter shrink-0 ml-4",
                         t.amount > 0 ? "text-emerald-600" : "text-rose-600"
                       )}>
-                        {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount)}
+                        {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount, group.currency)}
                       </span>
                     </div>
                   ))
@@ -1620,7 +1620,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                   "text-xl font-black tracking-tighter",
                   selectedCategoryTrans.transactions.reduce((s, t) => s + t.amount, 0) > 0 ? "text-emerald-600" : "text-rose-600"
                 )}>
-                  {formatCurrency(selectedCategoryTrans.transactions.reduce((s, t) => s + t.amount, 0))}
+                  {formatCurrency(selectedCategoryTrans.transactions.reduce((s, t) => s + t.amount, 0), group.currency)}
                 </span>
               </div>
             </motion.div>
@@ -1887,7 +1887,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Cílová částka (Kč)</label>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Cílová částka ({getCurrencySymbol(group.currency)})</label>
                           <input
                             type="number"
                             placeholder="0"
@@ -1943,7 +1943,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                                 {goal.name}
                               </h4>
                               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                {formatCurrency(goal.targetAmount)}
+                                {formatCurrency(goal.targetAmount, group.currency)}
                               </p>
                             </div>
                             {!isReadOnly && (

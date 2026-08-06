@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, orderBy, getDoc, writeBatch, getDocs, where, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member } from '../types';
-import { handleFirestoreError, formatCurrency, formatDate, cn, getUserRole } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole } from '../utils';
 import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -353,7 +353,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         <div className="md:col-span-4 bento-card bg-white p-8 flex flex-row items-center justify-between shadow-sm">
           <div>
             <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.2em] mb-2">Dostupná hotovost</p>
-            <p className="text-4xl font-black text-bento-text-main tracking-tighter">{formatCurrency(currentBalance)}</p>
+            <p className="text-4xl font-black text-bento-text-main tracking-tighter">{formatCurrency(currentBalance, group.currency)}</p>
           </div>
           <div className="w-14 h-14 bg-bento-accent/10 text-bento-accent rounded-2xl flex items-center justify-center">
             <Wallet className="w-7 h-7" />
@@ -492,7 +492,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                     "text-base font-black tracking-tight",
                     t.amount > 0 ? "text-emerald-600" : "text-rose-600"
                   )}>
-                    {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount)}
+                    {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount, group.currency)}
                   </div>
                 </div>
               </button>
@@ -587,7 +587,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
                 <div className="bg-slate-50 p-4 rounded-[2rem] border border-slate-100 mb-2">
                   <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">
-                    {isSummary || isDebtExpense ? 'Celková částka (Kč)' : 'Částka (Kč)'}
+                    {isSummary || isDebtExpense ? `Celková částka (${getCurrencySymbol(group.currency)})` : `Částka (${getCurrencySymbol(group.currency)})`}
                   </label>
                   <div className="relative group">
                     <input
@@ -602,7 +602,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                         setAmount(val);
                       }}
                     />
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">Kč</span>
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">{getCurrencySymbol(group.currency)}</span>
                   </div>
                 </div>
 
@@ -635,7 +635,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                     <div className="space-y-3">
                       {splitMode === 'equal' && (
                         <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Částka na člena (Kč)</label>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Částka na člena ({getCurrencySymbol(group.currency)})</label>
                           <input
                             type="number"
                             placeholder="0"
@@ -660,7 +660,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                       )}
 
                       <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Příspěvek z kasy (Kč)</label>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Příspěvek z kasy ({getCurrencySymbol(group.currency)})</label>
                         <input
                           type="number"
                           placeholder="0"
@@ -789,7 +789,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                                     setAmount((totalDebt + portion).toString());
                                   }}
                                 />
-                                <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-indigo-300">Kč</span>
+                                <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-indigo-300">{getCurrencySymbol(group.currency)}</span>
                               </div>
                             </div>
                           ))}
@@ -971,7 +971,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                     "text-2xl font-black tracking-tighter",
                     viewingTransaction.amount > 0 ? "text-emerald-600" : "text-rose-600"
                   )}>
-                    {viewingTransaction.amount > 0 ? '+' : ''}{formatCurrency(viewingTransaction.amount)}
+                    {viewingTransaction.amount > 0 ? '+' : ''}{formatCurrency(viewingTransaction.amount, group.currency)}
                   </span>
                 </div>
 
@@ -1010,7 +1010,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                             <div className="bg-slate-100/50 p-3 rounded-2xl border border-slate-200">
                                <div className="flex justify-between items-center mb-1">
                                   <span className="text-xs font-black text-slate-600 italic">Příspěvek z kasy</span>
-                                  <span className="text-xs font-black text-slate-600">{formatCurrency(viewingTransaction.cashboxPortion)}</span>
+                                  <span className="text-xs font-black text-slate-600">{formatCurrency(viewingTransaction.cashboxPortion, group.currency)}</span>
                                </div>
                             </div>
                           )}
@@ -1018,7 +1018,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                             <div key={idx} className="bg-indigo-50 p-3 rounded-2xl border border-indigo-100">
                               <div className="flex justify-between items-center mb-1">
                                 <span className="text-xs font-black text-indigo-700">{debt.memberName}</span>
-                                <span className="text-xs font-black text-indigo-600">{formatCurrency(debt.amount)}</span>
+                                <span className="text-xs font-black text-indigo-600">{formatCurrency(debt.amount, group.currency)}</span>
                               </div>
                               <div className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Převedeno do pokut</div>
                             </div>
@@ -1034,7 +1034,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                           <div key={idx} className="bg-slate-50 p-3 rounded-2xl border border-bento-card-border/50">
                             <div className="flex justify-between items-center mb-1">
                               <span className="text-xs font-black text-bento-text-main">{item.note}</span>
-                              <span className="text-xs font-black text-rose-600">{formatCurrency(item.amount)}</span>
+                              <span className="text-xs font-black text-rose-600">{formatCurrency(item.amount, group.currency)}</span>
                             </div>
                             <div className="text-[10px] font-bold text-bento-accent uppercase tracking-widest">
                               {viewingTransaction.amount > 0 ? 'Původ / Kdo' : 'Účel / Komu'}: {item.fromWho}

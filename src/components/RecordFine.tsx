@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, doc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Member, FineTemplate, OperationType, MemberGroup } from '../types';
-import { handleFirestoreError, cn, getUserRole } from '../utils';
+import { handleFirestoreError, getCurrencySymbol, cn, getUserRole } from '../utils';
 import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -383,14 +383,14 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                         <span className="font-bold block text-sm leading-tight truncate">{template.name}</span>
                         {template.type === 'dynamic' && (
                           <span className={cn("text-[10px] font-medium", selectedTemplate?.id === template.id ? "text-white/60" : "text-bento-text-muted")}>
-                            {template.amount} Kč / {template.unit}
+                            {template.amount} {getCurrencySymbol(group.currency)} / {template.unit}
                           </span>
                         )}
                       </div>
                     </div>
                     <div className="text-right">
                       <span className="font-bold text-[11px] whitespace-nowrap">
-                        {template.type === 'fixed' ? `${template.amount} Kč` : 'Dynamická'}
+                        {template.type === 'fixed' ? `${template.amount} ${getCurrencySymbol(group.currency)}` : 'Dynamická'}
                       </span>
                     </div>
                   </button>
@@ -460,7 +460,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Částka (Kč/ks)</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Částka ({getCurrencySymbol(group.currency)}/ks)</label>
                   <input
                     type="number"
                     placeholder="0"
@@ -489,12 +489,12 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
             <div className="flex justify-between items-center mb-6">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Výsledek</p>
-                <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} Kč</p>
+                <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} {getCurrencySymbol(group.currency)}</p>
                 <p className="text-[10px] font-medium text-bento-text-muted mt-2">pro každého z {selectedMemberIds.length} členů</p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Celkem</p>
-                <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} Kč</p>
+                <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} {getCurrencySymbol(group.currency)}</p>
               </div>
             </div>
 

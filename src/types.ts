@@ -11,6 +11,7 @@ export interface Group {
   id: string;
   name: string;
   ownerId: string;
+  currency?: string;
   ownerEmail?: string;
   memberUids?: string[];
   allowedEmails?: string[];
