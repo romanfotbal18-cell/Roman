@@ -115,6 +115,7 @@ export default function Settings({ group, period }: SettingsProps) {
   );
 
   const onDragEnd = async (event: any) => {
+    if (isReadOnly) return;
     const { active, over, type } = event;
     if (!over || active.id === over.id) return;
 
@@ -256,7 +257,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const handleBatchDelete = async () => {
-    if (selectedIds.size === 0 || isBatchProcessing) return;
+    if (isReadOnly || selectedIds.size === 0 || isBatchProcessing) return;
     setIsBatchProcessing(true);
     try {
       const subPath = activeTab === 'members' ? 'members' : 'fineTemplates';
@@ -315,7 +316,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const handleBatchCopy = async () => {
-    if (!targetGroupId || !targetPeriodId) return;
+    if (isReadOnly || !targetGroupId || !targetPeriodId) return;
     setIsBatchProcessing(true);
     try {
       const batch = writeBatch(db);
@@ -350,7 +351,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const saveMember = async () => {
-    if (!memberName.trim() || isSaving) return;
+    if (isReadOnly || !memberName.trim() || isSaving) return;
     setIsSaving(true);
     try {
       const memberPath = `groups/${group.id}/periods/${period.id}/members`;
@@ -387,7 +388,7 @@ export default function Settings({ group, period }: SettingsProps) {
 
   const saveTemplate = async () => {
     const amount = parseFloat(templateAmount);
-    if (!templateName.trim() || isNaN(amount) || isSaving) return;
+    if (isReadOnly || !templateName.trim() || isNaN(amount) || isSaving) return;
     setIsSaving(true);
     try {
       const templatePath = `groups/${group.id}/periods/${period.id}/fineTemplates`;
@@ -424,7 +425,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const saveMemberGroup = async () => {
-    if (!groupName.trim() || isSaving) return;
+    if (isReadOnly || !groupName.trim() || isSaving) return;
     setIsSaving(true);
     try {
       const gPath = `groups/${group.id}/periods/${period.id}/memberGroups`;
@@ -454,7 +455,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const saveEvent = async () => {
-    if (!eventName.trim() || !eventDate || isSaving) return;
+    if (isReadOnly || !eventName.trim() || !eventDate || isSaving) return;
     setIsSaving(true);
     try {
       const eventPath = `groups/${group.id}/periods/${period.id}/events`;
@@ -487,7 +488,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const deleteItem = async () => {
-    if (!deleteId || isDeleting) return;
+    if (isReadOnly || !deleteId || isDeleting) return;
     const itemToDelete = { ...deleteId };
     setIsDeleting(true);
     try {
@@ -540,6 +541,7 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const toggleMemberStatus = async (member: Member) => {
+    if (isReadOnly) return;
     try {
       await updateDoc(doc(db, `groups/${group.id}/periods/${period.id}/members`, member.id), {
         active: !member.active

@@ -298,7 +298,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   }, [fines, payments, members, currentPeriod.resetDebtTrendAt]);
 
   const resetDebtTrend = async () => {
-    if (isResetting) return;
+    if (isReadOnly || isResetting) return;
     if (!confirm('Opravdu chcete vynulovat graf vývoje dluhu? Historické údaje v grafu zmizí, ale veškeré pokuty i transakce zůstanou zachovány.')) return;
     
     setIsResetting(true);
@@ -405,7 +405,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   }, [activeGoal, stats.balance]);
 
   const handleAddGoal = async () => {
-    if (!newGoalName || !newGoalAmount) return;
+    if (isReadOnly || !newGoalName || !newGoalAmount) return;
     const amount = parseFloat(newGoalAmount);
     if (isNaN(amount) || amount <= 0) return;
 
@@ -427,6 +427,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   };
 
   const handleDeleteGoal = async (id: string) => {
+    if (isReadOnly) return;
     try {
       const goalRef = doc(db, `groups/${group.id}/periods/${period.id}/goals`, id);
       await deleteDoc(goalRef);
@@ -436,6 +437,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   };
 
   const handleToggleGoal = async (goal: Goal) => {
+    if (isReadOnly) return;
     try {
       const goalRef = doc(db, `groups/${group.id}/periods/${period.id}/goals`, goal.id);
       await updateDoc(goalRef, {
@@ -447,6 +449,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   };
 
   const handleReorderGoals = async (reorderedGoals: Goal[]) => {
+    if (isReadOnly) return;
     setGoals(reorderedGoals);
     const batch = writeBatch(db);
     reorderedGoals.forEach((goal, idx) => {
@@ -461,6 +464,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   };
 
   const handleResetStats = () => {
+    if (isReadOnly) return;
     let statName = '';
     let field = '';
 
@@ -493,7 +497,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   };
 
   const confirmReset = async () => {
-    if (!resetConfirm) return;
+    if (isReadOnly || !resetConfirm) return;
     
     try {
       const periodRef = doc(db, `groups/${group.id}/periods`, currentPeriod.id);
@@ -1088,15 +1092,17 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           <Area type="monotone" dataKey="amount" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorDebt)" />
                         </AreaChart>
                       </ResponsiveContainer>
-                      <button 
-                        onClick={resetDebtTrend}
-                        disabled={isResetting}
-                        className="absolute top-2 right-2 p-2 bg-slate-50 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all flex items-center gap-2 text-[10px] uppercase font-bold"
-                        title="Vynulovat graf"
-                      >
-                        <RotateCcw className={cn("w-3 h-3", isResetting && "animate-spin")} />
-                        Vynulovat
-                      </button>
+                      {!isReadOnly && (
+                        <button 
+                          onClick={resetDebtTrend}
+                          disabled={isResetting}
+                          className="absolute top-2 right-2 p-2 bg-slate-50 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all flex items-center gap-2 text-[10px] uppercase font-bold"
+                          title="Vynulovat graf"
+                        >
+                          <RotateCcw className={cn("w-3 h-3", isResetting && "animate-spin")} />
+                          Vynulovat
+                        </button>
+                      )}
                     </div>
                     <p className="text-center text-[10px] uppercase font-bold tracking-[0.2em] text-bento-text-muted">Vývoj celkového nevybraného dluhu v čase</p>
                   </div>
@@ -1116,13 +1122,15 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Statistiky a vhledy</h3>
             </div>
             
-            <button
-              onClick={handleResetStats}
-              className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl font-black text-[9px] uppercase tracking-widest transition-all border border-rose-100"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Anulovat statistiku
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={handleResetStats}
+                className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl font-black text-[9px] uppercase tracking-widest transition-all border border-rose-100"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Anulovat statistiku
+              </button>
+            )}
           </div>
 
           <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200 overflow-x-auto custom-scrollbar no-scrollbar scrollbar-hide">
@@ -1517,42 +1525,44 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       </AnimatePresence>
 
       {/* Quick Actions */}
-      <div className="pt-4">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
-          <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Rychlé akce</h3>
+      {!isReadOnly && (
+        <div className="pt-4">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
+            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Rychlé akce</h3>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <QuickAction
+              label="Zapsat pokutu"
+              icon={ReceiptText}
+              onClick={() => onOpenQuickAction('fine')}
+              color="hover:border-bento-accent/30 hover:bg-slate-50"
+              iconColor="bg-slate-100 text-bento-text-main"
+            />
+            <QuickAction
+              label="Zapsat platbu"
+              icon={CreditCard}
+              onClick={() => onOpenQuickAction('payment')}
+              color="hover:border-emerald-200 hover:bg-emerald-50/30"
+              iconColor="bg-slate-100 text-bento-text-main"
+            />
+            <QuickAction
+              label="Zapsat výdaj"
+              icon={TrendingDown}
+              onClick={() => onOpenQuickAction('expense')}
+              color="hover:border-rose-200 hover:bg-rose-50/30"
+              iconColor="bg-slate-100 text-bento-text-main"
+            />
+            <QuickAction
+              label="Zapsat příjem"
+              icon={TrendingUp}
+              onClick={() => onOpenQuickAction('income')}
+              color="hover:border-emerald-200 hover:bg-emerald-50/30"
+              iconColor="bg-slate-100 text-bento-text-main"
+            />
+          </div>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <QuickAction
-            label="Zapsat pokutu"
-            icon={ReceiptText}
-            onClick={() => onOpenQuickAction('fine')}
-            color="hover:border-bento-accent/30 hover:bg-slate-50"
-            iconColor="bg-slate-100 text-bento-text-main"
-          />
-          <QuickAction
-            label="Zapsat platbu"
-            icon={CreditCard}
-            onClick={() => onOpenQuickAction('payment')}
-            color="hover:border-emerald-200 hover:bg-emerald-50/30"
-            iconColor="bg-slate-100 text-bento-text-main"
-          />
-          <QuickAction
-            label="Zapsat výdaj"
-            icon={TrendingDown}
-            onClick={() => onOpenQuickAction('expense')}
-            color="hover:border-rose-200 hover:bg-rose-50/30"
-            iconColor="bg-slate-100 text-bento-text-main"
-          />
-          <QuickAction
-            label="Zapsat příjem"
-            icon={TrendingUp}
-            onClick={() => onOpenQuickAction('income')}
-            color="hover:border-emerald-200 hover:bg-emerald-50/30"
-            iconColor="bg-slate-100 text-bento-text-main"
-          />
-        </div>
-      </div>
+      )}
       {/* Category Detail Modal */}
       <AnimatePresence>
         {selectedCategoryTrans && (
@@ -1862,43 +1872,45 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
               <div className="p-8 flex-1 overflow-y-auto custom-scrollbar max-h-[60vh]">
                 <div className="space-y-6">
                   {/* Add New Goal */}
-                  <div className="bg-slate-50 rounded-[2rem] p-6 border border-slate-100 space-y-4">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted mb-2">Nový cíl</h3>
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Název cíle</label>
-                        <input
-                          type="text"
-                          placeholder="Napr. Nové dresy, Grill párty..."
-                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                          value={newGoalName}
-                          onChange={(e) => setNewGoalName(e.target.value)}
-                        />
+                  {!isReadOnly && (
+                    <div className="bg-slate-50 rounded-[2rem] p-6 border border-slate-100 space-y-4">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted mb-2">Nový cíl</h3>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Název cíle</label>
+                          <input
+                            type="text"
+                            placeholder="Napr. Nové dresy, Grill párty..."
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                            value={newGoalName}
+                            onChange={(e) => setNewGoalName(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Cílová částka (Kč)</label>
+                          <input
+                            type="number"
+                            placeholder="0"
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                            value={newGoalAmount}
+                            onChange={(e) => setNewGoalAmount(e.target.value)}
+                          />
+                        </div>
+                        <button
+                          onClick={handleAddGoal}
+                          disabled={!newGoalName || !newGoalAmount}
+                          className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
+                        >
+                          <PlusCircle className="w-4 h-4" />
+                          Přidat cíl
+                        </button>
                       </div>
-                      <div>
-                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5 ml-1">Cílová částka (Kč)</label>
-                        <input
-                          type="number"
-                          placeholder="0"
-                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                          value={newGoalAmount}
-                          onChange={(e) => setNewGoalAmount(e.target.value)}
-                        />
-                      </div>
-                      <button
-                        onClick={handleAddGoal}
-                        disabled={!newGoalName || !newGoalAmount}
-                        className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
-                      >
-                        <PlusCircle className="w-4 h-4" />
-                        Přidat cíl
-                      </button>
                     </div>
-                  </div>
+                  )}
 
                   {/* Goal List */}
                   <div className="space-y-4">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted ml-1">Vaše cíle (přetažením seřaďte)</h3>
+                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted ml-1">Vaše cíle {!isReadOnly && '(přetažením seřaďte)'}</h3>
                     {goals.length > 0 ? (
                       <Reorder.Group axis="y" values={goals} onReorder={handleReorderGoals} className="space-y-2">
                         {goals.map((goal) => (
@@ -1910,14 +1922,18 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                               goal.completed ? "border-emerald-100 bg-emerald-50/10" : "border-slate-100"
                             )}
                           >
-                            <div className="cursor-grab active:cursor-grabbing p-1">
-                              <GripVertical className="w-4 h-4 text-slate-300" />
-                            </div>
+                            {!isReadOnly && (
+                              <div className="cursor-grab active:cursor-grabbing p-1">
+                                <GripVertical className="w-4 h-4 text-slate-300" />
+                              </div>
+                            )}
                             <button
+                              disabled={isReadOnly}
                               onClick={() => handleToggleGoal(goal)}
                               className={cn(
                                 "w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all",
-                                goal.completed ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200"
+                                goal.completed ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200",
+                                isReadOnly && "cursor-default opacity-80"
                               )}
                             >
                               {goal.completed && <Trophy className="w-3 h-3" />}
@@ -1930,12 +1946,14 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                                 {formatCurrency(goal.targetAmount)}
                               </p>
                             </div>
-                            <button
-                              onClick={() => handleDeleteGoal(goal.id)}
-                              className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {!isReadOnly && (
+                              <button
+                                onClick={() => handleDeleteGoal(goal.id)}
+                                className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </Reorder.Item>
                         ))}
                       </Reorder.Group>

@@ -80,10 +80,9 @@ service cloud.firestore {
       allow update: if isSignedIn() && (
         // 1. Owner can update anything
         resource.data.ownerId == request.auth.uid ||
-        // 2. Any group member (editor, viewer, or user leaving/joining) can update group document
-        // as long as ownerId remains unchanged
+        // 2. Editors (non-viewers) can update group data (e.g. sharing with readers), but cannot change ownerId
         (
-          isUserInGroupData(resource.data) &&
+          canWriteGroupData(groupId) &&
           incoming().ownerId == resource.data.ownerId
         )
       ) && incoming().name is string && incoming().name.size() <= 100;

@@ -34,7 +34,6 @@ interface ShareModalProps {
 
 export default function ShareModal({ group, user, isOpen, onClose, onLeave }: ShareModalProps) {
   const [emailInput, setEmailInput] = useState('');
-  const [roleInput, setRoleInput] = useState<'editor' | 'viewer'>('editor');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -51,6 +50,14 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
   const currentUserRole = getUserRole(group, user.email, user.uid);
   const isOwner = currentUserRole === 'owner';
   const canManage = isOwner || currentUserRole === 'editor';
+
+  const [roleInput, setRoleInput] = useState<'editor' | 'viewer'>(isOwner ? 'editor' : 'viewer');
+
+  useEffect(() => {
+    if (!isOwner) {
+      setRoleInput('viewer');
+    }
+  }, [isOwner]);
 
   if (!isOpen) return null;
 
@@ -85,7 +92,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
 
     const newEntry: GroupMemberRole = {
       email: cleanEmail,
-      role: roleInput,
+      role: isOwner ? roleInput : 'viewer',
       addedAt: Date.now()
     };
 
@@ -334,13 +341,18 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                     <div className="grid grid-cols-2 gap-3">
                       <button
                         type="button"
-                        onClick={() => setRoleInput('editor')}
+                        disabled={!isOwner}
+                        onClick={() => {
+                          if (isOwner) setRoleInput('editor');
+                        }}
                         className={cn(
                           "p-3 rounded-2xl border-2 text-left transition-all flex flex-col justify-between gap-1",
                           roleInput === 'editor'
                             ? "border-blue-600 bg-blue-50/60 text-blue-900"
-                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+                          !isOwner && "opacity-50 cursor-not-allowed bg-slate-100"
                         )}
+                        title={!isOwner ? "Roli Editora může udělit pouze Vlastník kasy" : undefined}
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-extrabold text-xs flex items-center gap-1.5">
@@ -350,7 +362,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                           {roleInput === 'editor' && <Check className="w-4 h-4 text-blue-600" />}
                         </div>
                         <span className="text-[10px] text-slate-500 font-medium">
-                          Může zápis, úpravy, platby i členy.
+                          {!isOwner ? 'Udělit může pouze Vlastník' : 'Může zápis, úpravy, platby i členy.'}
                         </span>
                       </button>
 
@@ -376,6 +388,12 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                         </span>
                       </button>
                     </div>
+
+                    {!isOwner && (
+                      <p className="mt-2 text-[10px] text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-bold leading-relaxed">
+                        Jako Editor můžete zvát nové členy pouze v roli Čtenáře. Roli Editora může udělit pouze Vlastník kasy.
+                      </p>
+                    )}
                   </div>
 
                   {errorMsg && (
