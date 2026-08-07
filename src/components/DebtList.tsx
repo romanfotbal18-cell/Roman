@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc,
 import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
 import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
-import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag } from 'lucide-react';
+import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 
@@ -28,6 +28,16 @@ export default function DebtList({ group, period }: DebtListProps) {
   const [purchaseCategory, setPurchaseCategory] = useState('Občerstvení');
   const [purchaseRecipient, setPurchaseRecipient] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  const handleCopyText = (text: string, label: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedText(label);
+    setTimeout(() => {
+      setCopiedText(null);
+    }, 2000);
+  };
 
   const exportToExcel = () => {
     const sortedForExport = [...members].sort((a, b) => getMemberDebt(b.id) - getMemberDebt(a.id));
@@ -586,6 +596,86 @@ export default function DebtList({ group, period }: DebtListProps) {
                         </div>
                       ))}
                     </div>
+                    {/* Bank Account Connection for Debt Repayment */}
+                    <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-xs">
+                            <Building2 className="w-3.5 h-3.5" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wider text-indigo-900">Bankovní spojení pro úhradu</p>
+                            {group.bankName && <p className="text-[10px] font-medium text-slate-500">{group.bankName}</p>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {group.bankAccount ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-indigo-200/80 shadow-2xs">
+                            <div className="flex flex-col">
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Číslo účtu</span>
+                              <span className="font-mono font-extrabold text-sm text-slate-900 select-all">{group.bankAccount}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyText(group.bankAccount!, 'account')}
+                              className={cn(
+                                "flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs transition-all",
+                                copiedText === 'account'
+                                  ? "bg-emerald-600 text-white shadow-xs"
+                                  : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200"
+                              )}
+                              title="Kopírovat číslo účtu"
+                            >
+                              {copiedText === 'account' ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-100" />
+                                  <span>Zkopírováno!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>Kopírovat</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          {(group.bankVS || group.bankNote) && (
+                            <div className="p-2.5 bg-white/70 rounded-xl border border-indigo-100/80 text-xs space-y-1">
+                              {group.bankVS && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Variabilní symbol:</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-mono font-bold text-slate-800">{group.bankVS}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyText(group.bankVS!, 'vs')}
+                                      className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                                      title="Kopírovat VS"
+                                    >
+                                      {copiedText === 'vs' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                              {group.bankNote && (
+                                <div className="text-[11px] text-slate-600 font-medium pt-0.5 border-t border-slate-100">
+                                  <span className="text-slate-400 font-normal">Poznámka: </span>
+                                  {group.bankNote}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="p-2.5 bg-white/80 rounded-xl border border-indigo-100 text-[11px] text-slate-500 font-medium leading-relaxed">
+                          Číslo bankovního účtu kasy zatím nebylo v nastavení zadané.
+                        </div>
+                      )}
+                    </div>
+
                     {!isReadOnly ? (
                       <button
                         onClick={() => {
@@ -761,6 +851,25 @@ export default function DebtList({ group, period }: DebtListProps) {
                     </button>
                   </div>
                 </div>
+
+                {paymentMethod === 'bank' && group.bankAccount && (
+                  <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-xs text-indigo-950 font-bold">
+                      <div className="flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span>Účet kasy: <strong className="font-mono text-slate-900">{group.bankAccount}</strong></span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(group.bankAccount!, 'modal_account')}
+                        className="p-1 text-indigo-700 hover:text-indigo-900 bg-white rounded-md border border-indigo-200 text-[10px] font-bold flex items-center gap-1 px-2"
+                      >
+                        {copiedText === 'modal_account' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedText === 'modal_account' ? 'Zkopírováno' : 'Kopírovat'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {paymentMethod === 'purchase' ? (
                   <>

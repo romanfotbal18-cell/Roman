@@ -12,6 +12,10 @@ export interface Group {
   name: string;
   ownerId: string;
   currency?: string;
+  bankAccount?: string;
+  bankName?: string;
+  bankNote?: string;
+  bankVS?: string;
   ownerEmail?: string;
   memberUids?: string[];
   allowedEmails?: string[];

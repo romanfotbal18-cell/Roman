@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, write
 import { db, auth } from '../firebase';
 import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole } from '../types';
 import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency } from '../utils';
-import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins } from 'lucide-react';
+import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -36,11 +36,46 @@ export default function Settings({ group, period }: SettingsProps) {
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'sharing'>('templates');
+  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'bank' | 'sharing'>('templates');
 
   const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
   const isReadOnly = userRole === 'viewer';
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  // Bank Account Settings State
+  const [bankAccount, setBankAccount] = useState(group.bankAccount || '');
+  const [bankName, setBankName] = useState(group.bankName || '');
+  const [bankNote, setBankNote] = useState(group.bankNote || '');
+  const [bankVS, setBankVS] = useState(group.bankVS || '');
+  const [isSavingBank, setIsSavingBank] = useState(false);
+  const [bankSaveSuccess, setBankSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    setBankAccount(group.bankAccount || '');
+    setBankName(group.bankName || '');
+    setBankNote(group.bankNote || '');
+    setBankVS(group.bankVS || '');
+  }, [group]);
+
+  const handleSaveBankDetails = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isReadOnly || isSavingBank) return;
+    setIsSavingBank(true);
+    try {
+      await updateDoc(doc(db, 'groups', group.id), {
+        bankAccount: bankAccount.trim(),
+        bankName: bankName.trim(),
+        bankNote: bankNote.trim(),
+        bankVS: bankVS.trim()
+      });
+      setBankSaveSuccess(true);
+      setTimeout(() => setBankSaveSuccess(false), 3000);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}`);
+    } finally {
+      setIsSavingBank(false);
+    }
+  };
 
   // Currency Settings
   const currentCurrency = group.currency || 'CZK';
@@ -754,6 +789,19 @@ export default function Settings({ group, period }: SettingsProps) {
         >
           <CalendarIcon className="w-4 h-4" />
           Události
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('bank');
+            setSelectedIds(new Set());
+          }}
+          className={cn(
+            "flex items-center gap-2 px-6 py-2.5 rounded-lg font-bold text-[11px] uppercase tracking-wider transition-all",
+            activeTab === 'bank' ? "bg-white text-indigo-700 shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
+          )}
+        >
+          <Building2 className="w-4 h-4 text-indigo-600" />
+          Bankovní účet
         </button>
         <button
           onClick={() => {
@@ -1502,6 +1550,147 @@ export default function Settings({ group, period }: SettingsProps) {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'bank' && (
+        <div className="space-y-6">
+          <div className="flex items-center gap-2 px-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-indigo-600"></div>
+            <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Bankovní spojení pro úhrady pokut</h2>
+          </div>
+
+          <div className="bg-white border border-bento-card-border rounded-[2.5rem] p-6 sm:p-8 shadow-sm">
+            <form onSubmit={handleSaveBankDetails} className="space-y-6 max-w-2xl">
+              <div className="flex items-start gap-4 p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl">
+                <div className="p-3 bg-indigo-600 text-white rounded-xl shadow-md shadow-indigo-500/20 shrink-0">
+                  <Building2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">Údaje pro bezhotovostní převody</h3>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    Zde zadané bankovní spojení uvidí všichni členové a dlužníci v dlužném listu. Získají tak přímou možnost zkopírovat číslo účtu, variabilní symbol i pokyny k platbě.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-black uppercase tracking-wider text-bento-text-muted block mb-1.5">
+                  Číslo účtu / IBAN <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="např. 123456789/0100 nebo CZ6508000000001234567890"
+                  className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-2xl font-bold text-sm text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:font-normal placeholder:text-slate-400"
+                  value={bankAccount}
+                  onChange={(e) => setBankAccount(e.target.value)}
+                  disabled={isReadOnly}
+                />
+                <p className="text-[11px] font-medium text-slate-400 mt-1">
+                  Hlavní číslo účtu kasy, na které mají dlužníci posílat platby.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-bento-text-muted block mb-1.5">
+                    Název banky <span className="text-slate-400 font-normal">(volitelné)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="např. Air Bank, Česká spořitelna"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    disabled={isReadOnly}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-bento-text-muted block mb-1.5">
+                    Variabilní symbol <span className="text-slate-400 font-normal">(volitelné)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="např. 1234 nebo VS = číslo dresu"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                    value={bankVS}
+                    onChange={(e) => setBankVS(e.target.value)}
+                    disabled={isReadOnly}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-black uppercase tracking-wider text-bento-text-muted block mb-1.5">
+                  Poznámka pro příjemce / Pokyny <span className="text-slate-400 font-normal">(volitelné)</span>
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="např. Do poznámky pro příjemce uveďte své jméno a příjmení."
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                  value={bankNote}
+                  onChange={(e) => setBankNote(e.target.value)}
+                  disabled={isReadOnly}
+                />
+              </div>
+
+              {!isReadOnly ? (
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingBank}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-6 py-3 rounded-2xl flex items-center gap-2 text-xs uppercase tracking-wider shadow-lg shadow-indigo-500/15 transition-all hover:scale-[1.01] active:scale-98"
+                  >
+                    {isSavingBank ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : bankSaveSuccess ? (
+                      <Check className="w-4 h-4 text-emerald-300" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    <span>{bankSaveSuccess ? 'Uloženo!' : 'Uložit bankovní spojení'}</span>
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 font-medium">
+                  Režim Čtenáře — změny bankovního spojení nejsou povoleny.
+                </p>
+              )}
+            </form>
+
+            {/* Preview Card */}
+            {bankAccount && (
+              <div className="mt-8 pt-8 border-t border-slate-100 max-w-2xl">
+                <span className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-3">
+                  Náhled zobrazení pro dlužníky
+                </span>
+                <div className="p-4 bg-slate-50 border border-indigo-100 rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
+                      <Building2 className="w-4 h-4" />
+                      <span>Bankovní účet kasy</span>
+                    </div>
+                    {bankName && <span className="text-[11px] font-semibold text-slate-500">{bankName}</span>}
+                  </div>
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="font-mono font-bold text-sm text-slate-800">{bankAccount}</span>
+                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">Kopírovat</span>
+                  </div>
+                  {bankVS && (
+                    <p className="text-xs font-medium text-slate-600">
+                      Variabilní symbol: <strong className="text-slate-800">{bankVS}</strong>
+                    </p>
+                  )}
+                  {bankNote && (
+                    <p className="text-xs text-slate-500 italic">
+                       Poznámka: {bankNote}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
