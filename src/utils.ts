@@ -1,6 +1,12 @@
 import { auth } from './firebase';
 import { collection, query, where, getDocs, doc, writeBatch, Firestore } from 'firebase/firestore';
-import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine } from './types';
+import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, GroupEnabledFeatures } from './types';
+
+export function isFeatureEnabled(group: Group | undefined, featureKey: keyof GroupEnabledFeatures): boolean {
+  if (!group || !group.enabledFeatures) return true;
+  const val = group.enabledFeatures[featureKey];
+  return val !== undefined ? val : true;
+}
 
 export function getUserRole(group: Group, userEmail?: string | null, userUid?: string | null): UserRole {
   const currentUid = userUid || auth.currentUser?.uid;

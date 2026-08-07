@@ -7,6 +7,16 @@ export interface GroupMemberRole {
   addedAt?: number;
 }
 
+export interface GroupEnabledFeatures {
+  dashboardGoals?: boolean;
+  dashboardEnvelopes?: boolean;
+  dashboardCashboxChart?: boolean;
+  dashboardDebts?: boolean;
+  dashboardEvents?: boolean;
+  dashboardStats?: boolean;
+  cashboxEnvelopes?: boolean;
+}
+
 export interface Group {
   id: string;
   name: string;
@@ -23,6 +33,7 @@ export interface Group {
   viewerEmails?: string[];
   viewerUids?: string[];
   createdAt?: any;
+  enabledFeatures?: GroupEnabledFeatures;
 }
 
 export interface Member {
@@ -58,6 +69,7 @@ export interface Period {
   active?: boolean;
   groupId: string;
   createdAt: number;
+  goalCalcSource?: 'free_cash' | 'total_cash';
   resetDebtTrendAt?: number;
   statsResetAt?: number;
   violationsResetAt?: number;
@@ -136,6 +148,17 @@ export interface Goal {
   createdAt: number;
   completed: boolean;
   periodId: string;
+}
+
+export interface Envelope {
+  id: string;
+  name: string;
+  amount: number;
+  targetAmount?: number;
+  color?: string;
+  note?: string;
+  periodId: string;
+  createdAt: number;
 }
 
 export enum OperationType {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled } from '../utils';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -36,7 +36,12 @@ import {
   Flame,
   ShieldCheck,
   CalendarDays,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Folder,
+  FolderPlus,
+  FolderOpen,
+  ChevronLeft,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { 
@@ -53,9 +58,10 @@ import {
   Pie,
   Cell,
   BarChart,
-  Bar
+  Bar,
+  Legend
 } from 'recharts';
-import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal } from '../types';
+import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal, Envelope } from '../types';
 
 interface DashboardProps {
   group: Group;
@@ -82,6 +88,16 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const [payments, setPayments] = useState<Payment[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
+  const [dashboardCardView, setDashboardCardView] = useState<'goals' | 'envelopes'>(() => {
+    return (localStorage.getItem(`dashboard_card_view_${group.id}`) as 'goals' | 'envelopes') || 'goals';
+  });
+
+  const handleSetDashboardCardView = (view: 'goals' | 'envelopes') => {
+    setDashboardCardView(view);
+    localStorage.setItem(`dashboard_card_view_${group.id}`, view);
+  };
+
   const [currentPeriod, setCurrentPeriod] = useState<Period>(period);
   const [loading, setLoading] = useState(true);
   const [isResetting, setIsResetting] = useState(false);
@@ -175,6 +191,14 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       handleFirestoreError(error, OperationType.LIST, goalsPath);
     });
 
+    const envelopesPath = `groups/${group.id}/periods/${period.id}/envelopes`;
+    const unsubEnvelopes = onSnapshot(query(collection(db, envelopesPath), orderBy('createdAt', 'asc')), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Envelope));
+      setEnvelopes(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, envelopesPath);
+    });
+
     return () => {
       unsubMembers();
       unsubPayments();
@@ -182,6 +206,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       unsubFines();
       unsubEvents();
       unsubGoals();
+      unsubEnvelopes();
       unsubPeriod();
     };
   }, [group.id, period.id]);
@@ -214,6 +239,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
     });
   }, [members, fines, payments, group.id, period.id]);
 
+  const totalInEnvelopes = useMemo(() => {
+    return envelopes.reduce((sum, e) => sum + e.amount, 0);
+  }, [envelopes]);
+
   // Chart Data Calculations
   const balanceTrendData = useMemo(() => {
     let runningBalance = 0;
@@ -224,10 +253,11 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
         return {
           date: formatDate(t.createdAt),
           balance: runningBalance,
+          freeCash: Math.max(0, runningBalance - totalInEnvelopes),
           timestamp: t.createdAt
         };
       });
-  }, [transactions]);
+  }, [transactions, totalInEnvelopes]);
 
   const incomeBreakdown = useMemo(() => {
     const categories: Record<string, number> = {};
@@ -409,15 +439,53 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       .slice(0, 2);
   }, [allUpcomingEvents]);
 
-  const activeGoal = useMemo(() => {
-    return goals.find(g => !g.completed) || goals[0];
-  }, [goals]);
+  const hasDeficit = totalInEnvelopes > 0 && stats.balance < totalInEnvelopes;
+  const deficitAmount = hasDeficit ? totalInEnvelopes - Math.max(0, stats.balance) : 0;
+  const effectiveTotalInEnvelopes = Math.min(totalInEnvelopes, Math.max(0, stats.balance));
+  const envelopeCoverageRatio = totalInEnvelopes > 0 ? Math.min(1, Math.max(0, stats.balance) / totalInEnvelopes) : 1;
 
-  const goalProgress = useMemo(() => {
-    if (!activeGoal || activeGoal.targetAmount <= 0) return 0;
-    const progress = (stats.balance / activeGoal.targetAmount) * 100;
-    return Math.min(100, Math.max(0, progress));
-  }, [activeGoal, stats.balance]);
+  const freeCash = useMemo(() => {
+    return Math.max(0, stats.balance - totalInEnvelopes);
+  }, [stats.balance, totalInEnvelopes]);
+
+  const [selectedGoalIndex, setSelectedGoalIndex] = useState(0);
+
+  const goalCalcSource = currentPeriod?.goalCalcSource || 'free_cash';
+  const currentGoalBalance = goalCalcSource === 'free_cash' ? freeCash : stats.balance;
+
+  // Cascading allocation across goals in order of priority
+  const goalsWithAllocation = useMemo(() => {
+    let remaining = Math.max(0, currentGoalBalance);
+    return goals.map((g, idx) => {
+      const target = g.targetAmount || 0;
+      let allocated = 0;
+      if (target > 0) {
+        allocated = Math.min(remaining, target);
+        remaining = Math.max(0, remaining - allocated);
+      }
+      const progress = target > 0 ? Math.min(100, Math.max(0, (allocated / target) * 100)) : 0;
+      return {
+        ...g,
+        allocatedAmount: allocated,
+        progress,
+        priorityIndex: idx + 1
+      };
+    });
+  }, [goals, currentGoalBalance]);
+
+  const currentGoalNavIndex = Math.min(selectedGoalIndex, Math.max(0, goalsWithAllocation.length - 1));
+  const activeGoal = goalsWithAllocation[currentGoalNavIndex];
+  const goalProgress = activeGoal ? activeGoal.progress : 0;
+
+  const handleUpdateGoalCalcSource = async (source: 'free_cash' | 'total_cash') => {
+    if (isReadOnly) return;
+    try {
+      const periodRef = doc(db, `groups/${group.id}/periods/${period.id}`);
+      await updateDoc(periodRef, { goalCalcSource: source });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}/periods/${period.id}`);
+    }
+  };
 
   const handleAddGoal = async () => {
     if (isReadOnly || !newGoalName || !newGoalAmount) return;
@@ -674,78 +742,331 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
     return diffDays;
   };
 
+  const showGoals = isFeatureEnabled(group, 'dashboardGoals');
+  const showEnvelopes = isFeatureEnabled(group, 'dashboardEnvelopes');
+  const showCashboxChart = isFeatureEnabled(group, 'dashboardCashboxChart');
+  const showDebts = isFeatureEnabled(group, 'dashboardDebts');
+  const showEvents = isFeatureEnabled(group, 'dashboardEvents');
+  const showStats = isFeatureEnabled(group, 'dashboardStats');
+
+  const effectiveCardView = useMemo(() => {
+    if (showGoals && !showEnvelopes) return 'goals';
+    if (!showGoals && showEnvelopes) return 'envelopes';
+    return dashboardCardView;
+  }, [showGoals, showEnvelopes, dashboardCardView]);
+
   return (
     <div className="space-y-6 pb-12">
-      {/* Goal Progress Bar */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        onClick={() => setIsGoalModalOpen(true)}
-        className={cn(
-          "bento-card bg-white border-bento-card-border overflow-hidden cursor-pointer hover:border-bento-accent/30 transition-all",
-          activeGoal ? "p-4 md:p-6" : "p-2.5 md:p-3"
-        )}
-      >
-        {activeGoal ? (
-          <div className="space-y-4">
-            <div className="flex justify-between items-end">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <Target className="w-4 h-4 text-bento-accent" />
-                  <span className="text-[10px] uppercase font-black tracking-[0.2em] text-bento-text-muted">Aktuální cíl</span>
+      {/* Goals / Envelopes Switcher Card */}
+      {(showGoals || showEnvelopes) && (
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bento-card bg-white border-bento-card-border overflow-hidden transition-all p-4 md:p-6"
+        >
+          {/* Top bar with mode switcher */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-4 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              {showGoals && showEnvelopes ? (
+                <div className="p-1 bg-slate-100/80 rounded-xl flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSetDashboardCardView('goals')}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5",
+                      effectiveCardView === 'goals'
+                        ? "bg-white text-indigo-600 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-900"
+                    )}
+                  >
+                    <Target className="w-3.5 h-3.5" />
+                    <span>Cíle</span>
+                    {goals.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-indigo-50 text-indigo-700 font-bold">
+                        {goals.filter(g => !g.completed).length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetDashboardCardView('envelopes')}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5",
+                      effectiveCardView === 'envelopes'
+                        ? "bg-white text-purple-600 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-900"
+                    )}
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    <span>Obálky</span>
+                    {envelopes.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-purple-50 text-purple-700 font-bold">
+                        {envelopes.length}
+                      </span>
+                    )}
+                  </button>
                 </div>
-                <h3 className="text-lg font-black text-bento-text-main tracking-tight">{activeGoal.name}</h3>
-              </div>
-              <div className="text-right">
-                <div className="text-2xl font-black text-bento-accent leading-none mb-1">
-                  {goalProgress.toFixed(0)}%
+              ) : showGoals ? (
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                    <Target className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-main">
+                    Finanční cíle pokladny
+                  </h3>
                 </div>
-                <div className="text-[10px] font-bold text-bento-text-muted uppercase tracking-widest">
-                  {formatCurrency(stats.balance, group.currency)} / {formatCurrency(activeGoal.targetAmount, group.currency)}
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-purple-50 text-purple-600 rounded-lg">
+                    <Folder className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-main">
+                    Obálky pokladny (Vyčleněné úspory)
+                  </h3>
                 </div>
-              </div>
+              )}
             </div>
-            
-            <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden border border-slate-50 flex items-center">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${goalProgress}%` }}
-                transition={{ duration: 1, ease: "easeOut" }}
-                className={cn(
-                  "absolute inset-y-0 left-0 bg-gradient-to-r transition-all duration-500",
-                  goalProgress >= 100 ? "from-emerald-400 to-emerald-500" : "from-bento-accent to-indigo-500"
+
+            <div>
+              {effectiveCardView === 'goals' ? (
+                <button
+                  type="button"
+                  onClick={() => setIsGoalModalOpen(true)}
+                  className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100/80 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1"
+                >
+                  <Target className="w-3.5 h-3.5" />
+                  <span>Správa cílů</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('cashbox')}
+                  className="text-[10px] font-extrabold uppercase tracking-wider text-purple-600 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-100/80 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  <span>Správa obálek</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Content based on view */}
+          {effectiveCardView === 'goals' ? (
+          activeGoal ? (
+            <div 
+              onClick={() => setIsGoalModalOpen(true)} 
+              className="space-y-4 cursor-pointer group"
+            >
+              <div className="flex justify-between items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Target className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <span className="text-[10px] uppercase font-black tracking-[0.15em] text-bento-text-muted">
+                      Cíl #{activeGoal.priorityIndex} z {goalsWithAllocation.length}
+                    </span>
+                    {activeGoal.completed && (
+                      <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 font-bold text-[9px] rounded-md uppercase">
+                        Splněno
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-lg font-black text-bento-text-main tracking-tight group-hover:text-indigo-600 transition-colors truncate">
+                    {activeGoal.name}
+                  </h3>
+                </div>
+
+                {/* Arrow navigation buttons */}
+                {goalsWithAllocation.length > 1 && (
+                  <div 
+                    className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      disabled={currentGoalNavIndex === 0}
+                      onClick={() => setSelectedGoalIndex(prev => Math.max(0, prev - 1))}
+                      className="p-1.5 rounded-lg bg-white shadow-2xs hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-white text-slate-700 transition-all cursor-pointer disabled:cursor-not-allowed"
+                      title="Předchozí cíl"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-[10px] font-mono font-black text-slate-600 px-1.5 min-w-[32px] text-center">
+                      {currentGoalNavIndex + 1}/{goalsWithAllocation.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={currentGoalNavIndex === goalsWithAllocation.length - 1}
+                      onClick={() => setSelectedGoalIndex(prev => Math.min(goalsWithAllocation.length - 1, prev + 1))}
+                      className="p-1.5 rounded-lg bg-white shadow-2xs hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-white text-slate-700 transition-all cursor-pointer disabled:cursor-not-allowed"
+                      title="Další cíl"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
                 )}
-              />
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                 <div className="w-full h-full opacity-20 bg-[radial-gradient(circle,white_1px,transparent_1px)] bg-[size:10px_10px]" />
+              </div>
+
+              <div className="flex justify-between items-end gap-2">
+                <div>
+                  <div className="text-2xl font-black text-indigo-600 leading-none mb-1">
+                    {activeGoal.progress.toFixed(0)}%
+                  </div>
+                  <div className="text-[10px] font-bold text-bento-text-muted uppercase tracking-widest flex items-center gap-1">
+                    <span>{formatCurrency(activeGoal.allocatedAmount, group.currency)} / {formatCurrency(activeGoal.targetAmount, group.currency)}</span>
+                    <span className="text-[9px] text-slate-400 font-normal">
+                      ({goalCalcSource === 'free_cash' ? 'z volné hotovosti' : 'z celkové hotovosti'})
+                    </span>
+                  </div>
+                </div>
+
+                {activeGoal.progress >= 100 ? (
+                  <div className="flex items-center gap-1.5 text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-100 animate-bounce">
+                    <Trophy className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Cíl splněn!</span>
+                  </div>
+                ) : activeGoal.priorityIndex > 1 && activeGoal.allocatedAmount === 0 ? (
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-amber-700 bg-amber-50 px-2 py-1 rounded-lg border border-amber-100">
+                    <Lock className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Čeká na cíl #{activeGoal.priorityIndex - 1}</span>
+                  </div>
+                ) : null}
+              </div>
+              
+              <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden border border-slate-50 flex items-center">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${activeGoal.progress}%` }}
+                  transition={{ duration: 1, ease: "easeOut" }}
+                  className={cn(
+                    "absolute inset-y-0 left-0 bg-gradient-to-r transition-all duration-500",
+                    activeGoal.progress >= 100 ? "from-emerald-400 to-emerald-500" : "from-bento-accent to-indigo-500"
+                  )}
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                   <div className="w-full h-full opacity-20 bg-[radial-gradient(circle,white_1px,transparent_1px)] bg-[size:10px_10px]" />
+                </div>
               </div>
             </div>
-            {goalProgress >= 100 && !activeGoal.completed && (
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded-lg animate-bounce">
-                <Trophy className="w-3 h-3" />
-                Cíl splněn!
+          ) : (
+            <div 
+              onClick={() => setIsGoalModalOpen(true)}
+              className="flex items-center justify-between py-3 px-4 bg-slate-50 border border-dashed border-slate-200 rounded-2xl cursor-pointer hover:bg-indigo-50/50 hover:border-indigo-200 transition-all"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 bg-white rounded-xl flex items-center justify-center border border-slate-200 shadow-2xs">
+                  <Target className="w-4 h-4 text-indigo-500" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-slate-700">Zatím žádný cíl</h3>
+                  <p className="text-[10px] text-slate-400 font-medium">Klikněte pro vytvoření prvního finančního cíle</p>
+                </div>
               </div>
-            )}
-          </div>
+              <PlusCircle className="w-5 h-5 text-indigo-500" />
+            </div>
+          )
         ) : (
-          <div className="flex items-center justify-between py-0.5 px-1">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100">
-                <Target className="w-4 h-4 text-slate-300" />
+          envelopes.length === 0 ? (
+            <div 
+              onClick={() => onNavigate('cashbox')}
+              className="flex items-center justify-between py-3 px-4 bg-purple-50/50 border border-dashed border-purple-200 rounded-2xl cursor-pointer hover:bg-purple-50 transition-all"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 bg-purple-100 text-purple-700 rounded-xl flex items-center justify-center">
+                  <FolderPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-purple-900">Zatím žádné obálky</h3>
+                  <p className="text-[10px] text-purple-600 font-medium">Vyčleňte úspory pro konkrétní účely v pokladně</p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest leading-none mb-0.5">Zatím žádný cíl</h3>
-                <p className="text-[8px] font-bold text-slate-300 uppercase tracking-widest">Klikněte pro nastavení prvního cíle</p>
+              <ArrowRight className="w-4 h-4 text-purple-600" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-slate-700">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase font-black tracking-wider text-purple-600 bg-purple-50 px-2.5 py-1 rounded-lg border border-purple-100">
+                    Vyčleněné úspory celkem
+                  </span>
+                  <span className="font-mono font-black text-purple-900 text-sm">
+                    {formatCurrency(effectiveTotalInEnvelopes, group.currency)}
+                  </span>
+                  {hasDeficit && (
+                    <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      (Čerpáno {formatCurrency(deficitAmount, group.currency)} z obálek)
+                    </span>
+                  )}
+                </div>
+                <span className="text-[10px] font-medium text-slate-500">
+                  Volná hotovost: <strong className="text-slate-800 font-mono font-black">{formatCurrency(freeCash, group.currency)}</strong>
+                </span>
+              </div>
+
+              {hasDeficit && (
+                <div className="p-2 bg-amber-50/80 border border-amber-200/80 rounded-xl text-[10px] font-semibold text-amber-800 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>Volná hotovost je na 0 Kč. Pokles zůstatku pokladny ({formatCurrency(deficitAmount, group.currency)}) je čerpán z úspor v obálkách.</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
+                {envelopes.map((env) => {
+                  const effectiveAmount = envelopeCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * envelopeCoverageRatio)) : env.amount;
+                  const hasTarget = env.targetAmount && env.targetAmount > 0;
+                  const percent = hasTarget ? Math.min(100, Math.round((effectiveAmount / env.targetAmount!) * 100)) : 0;
+                  return (
+                    <div
+                      key={env.id}
+                      onClick={() => onNavigate('cashbox')}
+                      className="p-3 bg-slate-50 hover:bg-purple-50/50 border border-slate-200 hover:border-purple-200 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-1.5"
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="text-xs font-extrabold text-slate-800 line-clamp-1">{env.name}</span>
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-mono font-black text-purple-700 block">
+                            {formatCurrency(effectiveAmount, group.currency)}
+                          </span>
+                          {envelopeCoverageRatio < 1 && (
+                            <span className="text-[8px] font-semibold text-slate-400 block -mt-0.5">
+                              (nom. {formatCurrency(env.amount, group.currency)})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {hasTarget ? (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[9px] text-slate-500 font-bold">
+                            <span>Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
+                            <span>{percent}%</span>
+                          </div>
+                          <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-400 line-clamp-1 italic">
+                          {env.note || 'Volná obálka'}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
-            <PlusCircle className="w-4 h-4 text-slate-200" />
-          </div>
+          )
         )}
       </motion.div>
+      )}
 
       {/* Dynamic Grid Layout */}
+      {(showCashboxChart || showDebts || showEvents || showStats) && (
       <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
         {/* Balance Card */}
+        {showCashboxChart && (
         <motion.div 
           layout
           initial={{ opacity: 0, scale: 0.95 }}
@@ -773,8 +1094,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
           </div>
           <div className="absolute right-0 bottom-0 top-0 w-1/2 bg-gradient-to-l from-white/5 to-transparent pointer-events-none" />
         </motion.div>
+        )}
 
         {/* Debt Card */}
+        {showDebts && (
         <motion.div 
           layout
           initial={{ opacity: 0, scale: 0.95 }}
@@ -810,8 +1133,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             <Activity className="w-3.5 h-3.5 text-rose-300" />
           </div>
         </motion.div>
+        )}
 
         {/* Events Widget */}
+        {showEvents && (
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -859,8 +1184,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             </span>
           </div>
         </motion.div>
+        )}
 
         {/* Income Card */}
+        {showStats && (
         <motion.div 
           layout
           initial={{ opacity: 0, scale: 0.95 }}
@@ -878,8 +1205,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             <span className="text-3xl font-black tracking-tighter text-emerald-600 leading-none">{formatCurrency(stats.totalIncome, group.currency)}</span>
           </div>
         </motion.div>
+        )}
 
         {/* Expense Card */}
+        {showStats && (
         <motion.div 
           layout
           initial={{ opacity: 0, scale: 0.95 }}
@@ -897,8 +1226,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             <span className="text-3xl font-black tracking-tighter text-rose-500 leading-none">{formatCurrency(stats.totalExpense, group.currency)}</span>
           </div>
         </motion.div>
+        )}
 
         {/* Navigation / Action Card */}
+        {showStats && (
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -914,9 +1245,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
             </div>
           </div>
         </motion.div>
-
+        )}
 
       </div>
+      )}
 
       {/* Chart/Detail Section */}
       <AnimatePresence mode="wait">
@@ -948,40 +1280,108 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
 
               <div className="p-8">
                 {activeDetail === 'balance' && (
-                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                    <div className="lg:col-span-3 h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={balanceTrendData}>
-                          <defs>
-                            <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1}/>
-                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                          <XAxis dataKey="date" hide />
-                          <YAxis hide />
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: any) => [formatCurrency(value, group.currency), 'Zůstatek']}
-                          />
-                          <Area type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorBalance)" />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                      <div className="lg:col-span-3 h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={balanceTrendData}>
+                            <defs>
+                              <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15}/>
+                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorFreeCash" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.15}/>
+                                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={10} tickLine={false} />
+                            <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} tickFormatter={(val) => `${val}`} />
+                            <Tooltip 
+                              contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px -5px rgb(0 0 0 / 0.1)' }}
+                              formatter={(value: any, name: any) => [
+                                formatCurrency(value, group.currency), 
+                                name === 'freeCash' ? 'Volná hotovost (mimo obálky)' : 'Celkový zůstatek'
+                              ]}
+                            />
+                            <Legend 
+                              wrapperStyle={{ paddingTop: '10px', fontSize: '11px', fontWeight: 700 }}
+                              formatter={(value: string) => value === 'freeCash' ? 'Volná hotovost (mimo obálky)' : 'Celkový zůstatek'}
+                            />
+                            <Area type="monotone" dataKey="balance" name="balance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorBalance)" />
+                            <Area type="monotone" dataKey="freeCash" name="freeCash" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="4 4" fillOpacity={1} fill="url(#colorFreeCash)" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-0.5">Počáteční stav</span>
+                          <p className="text-base font-black text-bento-text-main">{formatCurrency(balanceTrendData[0]?.balance || 0, group.currency)}</p>
+                        </div>
+                        <div className="p-3.5 bg-blue-50/50 border border-blue-100 rounded-2xl">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 block mb-0.5">Celkový zůstatek</span>
+                          <p className="text-base font-black text-blue-600">{formatCurrency(stats.balance, group.currency)}</p>
+                        </div>
+                        <div className="p-3.5 bg-purple-50/50 border border-purple-100 rounded-2xl">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-purple-600 block mb-0.5">Volná hotovost</span>
+                          <p className="text-base font-black text-purple-700">{formatCurrency(freeCash, group.currency)}</p>
+                          <span className="text-[9px] text-purple-500 font-medium block mt-0.5">
+                            {hasDeficit 
+                              ? `Čerpáno ${formatCurrency(deficitAmount, group.currency)} z úspor v obálkách (drží 0 Kč)`
+                              : `Po odečtení ${formatCurrency(totalInEnvelopes, group.currency)} v obálkách`}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="space-y-4">
-                      <div className="p-4 bg-slate-50 rounded-2xl">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Počáteční stav</span>
-                        <p className="text-lg font-black text-bento-text-main">{formatCurrency(balanceTrendData[0]?.balance || 0, group.currency)}</p>
+
+                    {/* Envelopes Overview below chart */}
+                    <div className="pt-5 border-t border-slate-100">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Folder className="w-4 h-4 text-purple-600" />
+                          <span className="text-xs font-black uppercase tracking-wider text-slate-700">
+                            Vytvořené obálky ({envelopes.length})
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-mono font-bold text-purple-700 block">
+                            Skutečně v obálkách: {formatCurrency(effectiveTotalInEnvelopes, group.currency)}
+                          </span>
+                          {hasDeficit && (
+                            <span className="text-[9px] font-semibold text-slate-400 block">
+                              (nominálně {formatCurrency(totalInEnvelopes, group.currency)})
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="p-4 bg-slate-50 rounded-2xl">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted block mb-1">Transakcí celkem</span>
-                        <p className="text-lg font-black text-bento-text-main">{transactions.length}</p>
-                      </div>
-                      <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-2xl">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 block mb-1">Finální zůstatek</span>
-                        <p className="text-lg font-black text-blue-600">{formatCurrency(stats.balance, group.currency)}</p>
-                      </div>
+
+                      {envelopes.length > 0 ? (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                          {envelopes.map(env => {
+                            const effectiveAmount = envelopeCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * envelopeCoverageRatio)) : env.amount;
+                            return (
+                              <div key={env.id} className="p-2.5 bg-purple-50/40 border border-purple-100 rounded-xl flex flex-col justify-between">
+                                <span className="text-[11px] font-extrabold text-slate-800 truncate" title={env.name}>{env.name}</span>
+                                <div className="mt-1">
+                                  <span className="text-xs font-mono font-black text-purple-700 block">
+                                    {formatCurrency(effectiveAmount, group.currency)}
+                                  </span>
+                                  {envelopeCoverageRatio < 1 && (
+                                    <span className="text-[8px] text-slate-400 font-semibold block">
+                                      (nom. {formatCurrency(env.amount, group.currency)})
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-[11px] text-slate-400 font-medium">
+                          Zatím nebyly vytvořeny žádné obálky
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1886,6 +2286,73 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
 
               <div className="p-8 flex-1 overflow-y-auto custom-scrollbar max-h-[60vh]">
                 <div className="space-y-6">
+                  {/* Calculation Source Selector */}
+                  <div className="bg-slate-50 rounded-[2rem] p-5 border border-slate-100 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted">
+                        Počítat plnění cílů z
+                      </h3>
+                      <span className="text-[10px] font-extrabold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
+                        {goalCalcSource === 'free_cash' ? 'Dostupná hotovost' : 'Celková hotovost'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={isReadOnly}
+                        onClick={() => handleUpdateGoalCalcSource('free_cash')}
+                        className={cn(
+                          "p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between",
+                          (currentPeriod?.goalCalcSource || 'free_cash') === 'free_cash'
+                            ? "bg-indigo-600 border-indigo-600 text-white font-bold shadow-md shadow-indigo-600/10"
+                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
+                        )}
+                      >
+                        <div>
+                          <div className="text-xs font-black flex items-center justify-between">
+                            <span>Dostupné hotovosti</span>
+                            {(currentPeriod?.goalCalcSource || 'free_cash') === 'free_cash' && (
+                              <span className="w-2 h-2 rounded-full bg-white" />
+                            )}
+                          </div>
+                          <p className={cn(
+                            "text-[10px] mt-1 font-medium",
+                            (currentPeriod?.goalCalcSource || 'free_cash') === 'free_cash' ? "text-indigo-100" : "text-slate-400"
+                          )}>
+                            Mimo obálky ({formatCurrency(freeCash, group.currency)})
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isReadOnly}
+                        onClick={() => handleUpdateGoalCalcSource('total_cash')}
+                        className={cn(
+                          "p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between",
+                          currentPeriod?.goalCalcSource === 'total_cash'
+                            ? "bg-indigo-600 border-indigo-600 text-white font-bold shadow-md shadow-indigo-600/10"
+                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
+                        )}
+                      >
+                        <div>
+                          <div className="text-xs font-black flex items-center justify-between">
+                            <span>Celkové hotovosti</span>
+                            {currentPeriod?.goalCalcSource === 'total_cash' && (
+                              <span className="w-2 h-2 rounded-full bg-white" />
+                            )}
+                          </div>
+                          <p className={cn(
+                            "text-[10px] mt-1 font-medium",
+                            currentPeriod?.goalCalcSource === 'total_cash' ? "text-indigo-100" : "text-slate-400"
+                          )}>
+                            Včetně obálek ({formatCurrency(stats.balance, group.currency)})
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Add New Goal */}
                   {!isReadOnly && (
                     <div className="bg-slate-50 rounded-[2rem] p-6 border border-slate-100 space-y-4">
@@ -1925,52 +2392,71 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
 
                   {/* Goal List */}
                   <div className="space-y-4">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted ml-1">Vaše cíle {!isReadOnly && '(přetažením seřaďte)'}</h3>
-                    {goals.length > 0 ? (
-                      <Reorder.Group axis="y" values={goals} onReorder={handleReorderGoals} className="space-y-2">
-                        {goals.map((goal) => (
-                          <Reorder.Item 
-                            key={goal.id} 
-                            value={goal}
-                            className={cn(
-                              "bg-white border p-4 rounded-2xl flex items-center gap-3 transition-all",
-                              goal.completed ? "border-emerald-100 bg-emerald-50/10" : "border-slate-100"
-                            )}
-                          >
-                            {!isReadOnly && (
-                              <div className="cursor-grab active:cursor-grabbing p-1">
-                                <GripVertical className="w-4 h-4 text-slate-300" />
-                              </div>
-                            )}
-                            <button
-                              disabled={isReadOnly}
-                              onClick={() => handleToggleGoal(goal)}
+                    <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-muted ml-1">Vaše cíle {!isReadOnly && '(přetažením seřaďte prioritizaci)'}</h3>
+                    {goalsWithAllocation.length > 0 ? (
+                      <Reorder.Group axis="y" values={goals} onReorder={handleReorderGoals} className="space-y-2.5">
+                        {goalsWithAllocation.map((goal) => {
+                          const originalGoal = goals.find(g => g.id === goal.id) || goal;
+                          return (
+                            <Reorder.Item 
+                              key={goal.id} 
+                              value={originalGoal}
                               className={cn(
-                                "w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all",
-                                goal.completed ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200",
-                                isReadOnly && "cursor-default opacity-80"
+                                "bg-white border p-4 rounded-2xl flex flex-col gap-2.5 transition-all shadow-2xs",
+                                goal.completed ? "border-emerald-100 bg-emerald-50/10" : "border-slate-100"
                               )}
                             >
-                              {goal.completed && <Trophy className="w-3 h-3" />}
-                            </button>
-                            <div className="flex-1 min-w-0">
-                              <h4 className={cn("text-sm font-black truncate leading-tight", goal.completed ? "text-emerald-700 line-through opacity-50" : "text-bento-text-main")}>
-                                {goal.name}
-                              </h4>
-                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                {formatCurrency(goal.targetAmount, group.currency)}
-                              </p>
-                            </div>
-                            {!isReadOnly && (
-                              <button
-                                onClick={() => handleDeleteGoal(goal.id)}
-                                className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </Reorder.Item>
-                        ))}
+                              <div className="flex items-center gap-3">
+                                {!isReadOnly && (
+                                  <div className="cursor-grab active:cursor-grabbing p-1">
+                                    <GripVertical className="w-4 h-4 text-slate-300" />
+                                  </div>
+                                )}
+                                <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md shrink-0">
+                                  #{goal.priorityIndex}
+                                </span>
+                                <button
+                                  disabled={isReadOnly}
+                                  onClick={() => handleToggleGoal(originalGoal)}
+                                  className={cn(
+                                    "w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all shrink-0",
+                                    goal.completed ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200",
+                                    isReadOnly && "cursor-default opacity-80"
+                                  )}
+                                >
+                                  {goal.completed && <Trophy className="w-3 h-3" />}
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                  <h4 className={cn("text-sm font-black truncate leading-tight", goal.completed ? "text-emerald-700 line-through opacity-50" : "text-bento-text-main")}>
+                                    {goal.name}
+                                  </h4>
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-between mt-0.5">
+                                    <span>{formatCurrency(goal.allocatedAmount, group.currency)} / {formatCurrency(goal.targetAmount, group.currency)}</span>
+                                    <span className="font-mono font-black text-indigo-600 ml-2">{goal.progress.toFixed(0)}%</span>
+                                  </p>
+                                </div>
+                                {!isReadOnly && (
+                                  <button
+                                    onClick={() => handleDeleteGoal(goal.id)}
+                                    className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all shrink-0"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                                <div 
+                                  className={cn(
+                                    "h-full rounded-full transition-all duration-300",
+                                    goal.progress >= 100 ? "bg-emerald-500" : "bg-indigo-600"
+                                  )}
+                                  style={{ width: `${goal.progress}%` }}
+                                />
+                              </div>
+                            </Reorder.Item>
+                          );
+                        })}
                       </Reorder.Group>
                     ) : (
                       <div className="text-center py-12 bg-slate-50 rounded-[2rem] border border-dashed border-slate-200">
@@ -1983,8 +2469,8 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
               </div>
               
               <div className="p-6 bg-slate-50 border-t border-bento-card-border text-center">
-                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                   Na dashboardu se vždy zobrazuje první nedokončený cíl v seznamu.
+                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-relaxed">
+                   Cíle se plní v přísném pořadí podle priority. Další cíl se plní až z přebytku po 100% naplnění předchozího.
                  </p>
               </div>
             </motion.div>

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch, getDocs, where, setDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole } from '../types';
-import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency } from '../utils';
-import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2 } from 'lucide-react';
+import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole, GroupEnabledFeatures } from '../types';
+import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency, isFeatureEnabled } from '../utils';
+import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2, Sliders, Target, Folder, PieChart, Wallet, HelpCircle, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -36,11 +36,29 @@ export default function Settings({ group, period }: SettingsProps) {
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'bank' | 'sharing'>('templates');
+  const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'bank' | 'sharing' | 'modules'>('templates');
+
+  const handleToggleFeature = async (featureKey: keyof GroupEnabledFeatures) => {
+    if (isReadOnly) return;
+    const currentVal = isFeatureEnabled(group, featureKey);
+    const currentFeatures = group.enabledFeatures || {};
+
+    try {
+      await updateDoc(doc(db, 'groups', group.id), {
+        enabledFeatures: {
+          ...currentFeatures,
+          [featureKey]: !currentVal
+        }
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}`);
+    }
+  };
 
   const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
   const isReadOnly = userRole === 'viewer';
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [activeHelpModal, setActiveHelpModal] = useState<{ title: string; description: string; example: string } | null>(null);
 
   // Bank Account Settings State
   const [bankAccount, setBankAccount] = useState(group.bankAccount || '');
@@ -135,6 +153,8 @@ export default function Settings({ group, period }: SettingsProps) {
   const [groupName, setGroupName] = useState('');
   const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(new Set());
   const [editingMemberGroup, setEditingMemberGroup] = useState<MemberGroup | null>(null);
+  const [modalGroupSearchQuery, setModalGroupSearchQuery] = useState('');
+  const [modalGroupMemberSortOption, setModalGroupMemberSortOption] = useState<'name' | 'age-asc' | 'age-desc'>('name');
 
   // Template Modal State
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
@@ -647,6 +667,60 @@ export default function Settings({ group, period }: SettingsProps) {
       });
   }, [members, memberSearchTerm, memberSortOption, memberStatusFilter, memberPositionFilter]);
 
+  const formatMemberAgeAndBirth = (birthDate?: string) => {
+    if (!birthDate) return null;
+    const birth = new Date(birthDate);
+    if (isNaN(birth.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const mDiff = today.getMonth() - birth.getMonth();
+    if (mDiff < 0 || (mDiff === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    const formattedDate = birth.toLocaleDateString('cs-CZ');
+    return `${age} let (${formattedDate})`;
+  };
+
+  useEffect(() => {
+    if (isGroupModalOpen) {
+      setModalGroupSearchQuery('');
+      setModalGroupMemberSortOption('name');
+    }
+  }, [isGroupModalOpen]);
+
+  const modalFilteredMembers = useMemo(() => {
+    let list = [...members];
+
+    if (modalGroupSearchQuery.trim()) {
+      const q = modalGroupSearchQuery.toLowerCase().trim();
+      list = list.filter(m =>
+        m.name.toLowerCase().includes(q) ||
+        (m.position && m.position.toLowerCase().includes(q))
+      );
+    }
+
+    list.sort((a, b) => {
+      if (modalGroupMemberSortOption === 'name') {
+        return a.name.localeCompare(b.name, 'cs-CZ');
+      }
+      if (modalGroupMemberSortOption === 'age-asc') {
+        const dateA = a.birthDate ? new Date(a.birthDate).getTime() : -Infinity;
+        const dateB = b.birthDate ? new Date(b.birthDate).getTime() : -Infinity;
+        if (dateA === dateB) return a.name.localeCompare(b.name, 'cs-CZ');
+        return dateB - dateA;
+      }
+      if (modalGroupMemberSortOption === 'age-desc') {
+        const dateA = a.birthDate ? new Date(a.birthDate).getTime() : Infinity;
+        const dateB = b.birthDate ? new Date(b.birthDate).getTime() : Infinity;
+        if (dateA === dateB) return a.name.localeCompare(b.name, 'cs-CZ');
+        return dateA - dateB;
+      }
+      return 0;
+    });
+
+    return list;
+  }, [members, modalGroupSearchQuery, modalGroupMemberSortOption]);
+
   const filteredTemplates = useMemo(() => {
     return templates.filter(t => t.name.toLowerCase().includes(templateSearchTerm.toLowerCase()));
   }, [templates, templateSearchTerm]);
@@ -816,6 +890,19 @@ export default function Settings({ group, period }: SettingsProps) {
           <Share2 className="w-4 h-4 text-blue-600" />
           Sdílení kasy
         </button>
+        <button
+          onClick={() => {
+            setActiveTab('modules');
+            setSelectedIds(new Set());
+          }}
+          className={cn(
+            "flex items-center gap-2 px-6 py-2.5 rounded-lg font-bold text-[11px] uppercase tracking-wider transition-all",
+            activeTab === 'modules' ? "bg-white text-indigo-700 shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
+          )}
+        >
+          <Sliders className="w-4 h-4 text-indigo-600" />
+          Moduly a zobrazení
+        </button>
       </div>
 
       {activeTab === 'templates' && (
@@ -865,6 +952,18 @@ export default function Settings({ group, period }: SettingsProps) {
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
                 <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Sazebník prohřešků</h2>
+                <button
+                  type="button"
+                  onClick={() => setActiveHelpModal({
+                    title: 'Sazebník poplatků a prohřešků',
+                    description: 'Předdefinovaný ceník poplatků, příspěvků nebo stornopoplatků pro vaši skupinu či organizaci. Při předepisování platby konkrétnímu členovi stačí kliknout na připravenou položku ze sazebníku bez nutnosti ručně vypisovat název a částku.',
+                    example: 'Příchod po stanoveném čase (100 Kč), Neomluvená absence na schůzi (200 Kč), Ztráta klíčů či přístupové karty (500 Kč), Pravidelný měsíční příspěvek (300 Kč).'
+                  })}
+                  className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                  title="Nápověda k sazebníku"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </button>
               </div>
               
               <div className="flex flex-wrap items-center gap-3">
@@ -994,6 +1093,18 @@ export default function Settings({ group, period }: SettingsProps) {
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
                 <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Seznam členů</h2>
+                <button
+                  type="button"
+                  onClick={() => setActiveHelpModal({
+                    title: 'Správa členů skupiny',
+                    description: 'Přehledná evidence všech členů vaší skupiny, týmu nebo spolku. Můžete zde spravovat kontakty, sledovat věk a datum narození pro automatická narozeninová upozornění a nastavovat stav (Aktivní / Neaktivní). Neaktivním členům se nevytváří nové automatické poplatky.',
+                    example: 'Evidence nového člena organizace, nastavení stavu Neaktivní pro člena na dlouhodobé pauze nebo přehled nadcházejících narozenin všech členů na jednom místě.'
+                  })}
+                  className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                  title="Nápověda k seznamu členů"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </button>
               </div>
               
               <div className="flex flex-wrap items-center gap-3">
@@ -1185,6 +1296,18 @@ export default function Settings({ group, period }: SettingsProps) {
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
                   <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Seznam skupin</h2>
+                  <button
+                    type="button"
+                    onClick={() => setActiveHelpModal({
+                      title: 'Skupiny a podtýmy členů',
+                      description: 'Umožňuje rozdělit členy do podskupin podle rolí, projektů, oddělení nebo věku. Při předepisování poplatků, příspěvků či vytváření událostí můžete vybrat celou skupinu najednou.',
+                      example: 'Rozdělení do skupin jako "Vedení spolku", "Juniorští členové", "Projektový tým A" nebo "Organizační výbor". Předepsání poplatku všem členům vybrané skupiny jedním kliknutím.'
+                    })}
+                    className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                    title="Nápověda ke skupinám"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -1304,6 +1427,18 @@ export default function Settings({ group, period }: SettingsProps) {
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
                 <h2 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Připravované události</h2>
+                <button
+                  type="button"
+                  onClick={() => setActiveHelpModal({
+                    title: 'Kalendář událostí a akcí',
+                    description: 'Plánovač nadcházejících setkání, schůzí, společenských akcí nebo důležitých termínů. Události se automaticky propojují s narozeninami členů a zobrazují v náhledu na hlavní stránce. Důležité akce lze vizuálně zvýraznit.',
+                    example: 'Výroční členská schůze, Společný výjezdní teambuilding, Termín pro odevzdání podkladů nebo Narozeniny členů.'
+                  })}
+                  className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                  title="Nápověda k událostem"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </button>
               </div>
               
               <div className="flex flex-wrap items-center gap-3">
@@ -1733,6 +1868,325 @@ export default function Settings({ group, period }: SettingsProps) {
         </div>
       )}
 
+      {activeTab === 'modules' && (
+        <div className="space-y-6">
+          {/* Info Banner */}
+          <div className="bg-gradient-to-r from-indigo-50/80 via-purple-50/50 to-slate-50 border border-indigo-100/80 rounded-2xl p-4 shadow-2xs flex items-center gap-3">
+            <div className="w-8 h-8 bg-indigo-600 text-white rounded-xl flex items-center justify-center shrink-0 shadow-xs">
+              <Sliders className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="font-extrabold text-slate-900 text-xs">
+                Aktivace a deaktivace modulů
+              </h3>
+              <p className="text-[11px] text-slate-500 leading-tight mt-0.5">
+                Vypnutím modulů můžete zjednodušit aplikaci. Uložená data nebudou smazána. Klepnutím na ikonu <HelpCircle className="w-3.5 h-3.5 inline text-indigo-500 align-text-bottom" /> zobrazíte detailní návod a příklad použití.
+              </p>
+            </div>
+          </div>
+
+          {/* Section 1: Dashboard */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 px-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-indigo-600"></div>
+              <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Přehled (Dashboard)</h2>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+              {/* Goals */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg shrink-0">
+                    <Target className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Cíle na dashboardu</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Cíle na dashboardu',
+                        description: 'Aktivuje na hlavní stránce (Dashboard) modul s vašimi prioritními finančními cíli a vizuálním ukazatelem pokroku v jejich plnění.',
+                        example: 'Fond na nákup nového společného vybavení (Cíl: 50 000 Kč, Vybráno: 35 000 Kč) nebo šetření na uspořádání výroční akce.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Cíle"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardGoals')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardGoals') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardGoals') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {/* Envelopes Dashboard */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-purple-50 text-purple-600 rounded-lg shrink-0">
+                    <Folder className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Obálky na dashboardu</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Obálky na dashboardu',
+                        description: 'Zobrazí na hlavní stránce souhrnnou kartu vyčleněných úspor a detailní rozpad všech vytvořených obálek.',
+                        example: 'Rychlý přehled stavu úspor v obálkách "Rezerva na provoz" (15 000 Kč) a "Fond na opravy" (10 000 Kč) ihned po přihlášení.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-purple-600 focus:text-purple-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Obálky"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardEnvelopes')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardEnvelopes') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardEnvelopes') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {/* Cashbox Chart */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-slate-900 text-white rounded-lg shrink-0">
+                    <Wallet className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Pokladna (graf)</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Pokladna - graf na dashboardu',
+                        description: 'Zobrazí kartu pokladny a interaktivní graf vývoje celkového zůstatku v čase přímo na hlavní stránce.',
+                        example: 'Sledování růstu či poklesu hotovosti v pokladně za poslední měsíce na přehledné časové ose.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-indigo-600 focus:text-indigo-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Pokladna"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardCashboxChart')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardCashboxChart') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardCashboxChart') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {/* Debts */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-rose-50 text-rose-600 rounded-lg shrink-0">
+                    <Users className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Dluhy na dashboardu</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Dluhy na dashboardu',
+                        description: 'Zobrazí na hlavní stránce kartu s celkovým dluhem členů vůči skupině a rychlým proklikem na seznam dlužníků.',
+                        example: 'Přehled o tom, že 3 členové mají neuhrazené členské příspěvky či poplatky v celkové hodnotě 1 800 Kč.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-rose-600 focus:text-rose-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Dluhy"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardDebts')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardDebts') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardDebts') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {/* Events */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg shrink-0">
+                    <CalendarIcon className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Události na dashboardu</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Události na dashboardu',
+                        description: 'Zobrazí na hlavní stránce widget s najbližšími plánovanými akcemi, schůzkami a nadcházejícími narozeninami členů.',
+                        example: 'Widget "Za 2 dny: Členská schůze", "Za 5 dní: Narozeniny - Petr Svoboda".'
+                      })}
+                      className="p-1 text-slate-400 hover:text-blue-600 focus:text-blue-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Události"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardEvents')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardEvents') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardEvents') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {/* Stats & Insights */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg shrink-0">
+                    <PieChart className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Statistiky a vhledy</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Statistiky a vhledy',
+                        description: 'Zobrazí na hlavní stránce přehledové karty celkových příjmů, výdajů a grafické koláčové rozpadové grafy.',
+                        example: 'Srovnání příjmů z členských příspěvků a darů oproti výdajům za provoz a materiál v daném období.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-emerald-600 focus:text-emerald-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k modulu Statistiky"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('dashboardStats')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'dashboardStats') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'dashboardStats') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Cashbox */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 px-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-purple-600"></div>
+              <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-bento-text-muted">Pokladna (Správa hotovosti)</h2>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+              {/* Cashbox Envelopes */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-purple-50 text-purple-600 rounded-lg shrink-0">
+                    <Folder className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Obálky v pokladně</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Obálky v pokladně',
+                        description: 'Umožňuje rozdělit hotovost v pokladně do samostatných obálek (účelových fondů). Při vypnutí bude pokladna zobrazovat čistě celkovou hotovost bez vnitřního členění.',
+                        example: 'Vytvoření obálky "Provozní zálohy" a "Kulturní fond", do kterých se vyčleňuje část peněz z celkové pokladny.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-purple-600 focus:text-purple-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k obálkám v pokladně"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('cashboxEnvelopes')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'cashboxEnvelopes') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'cashboxEnvelopes') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Item Modal (Unified for Members/Templates/Groups/Events) */}
       <AnimatePresence>
         {(isMemberModalOpen || isTemplateModalOpen || isGroupModalOpen || isEventModalOpen) && (
@@ -1906,33 +2360,107 @@ export default function Settings({ group, period }: SettingsProps) {
                   </div>
 
                   <div>
-                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Členové skupiny</label>
-                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                      {members.map(m => (
-                        <div 
-                          key={m.id}
-                          onClick={() => {
-                            const newIds = new Set(groupMemberIds);
-                            if (newIds.has(m.id)) newIds.delete(m.id);
-                            else newIds.add(m.id);
-                            setGroupMemberIds(newIds);
-                          }}
-                          className={cn(
-                            "flex items-center justify-between p-3 rounded-xl border-2 transition-all cursor-pointer",
-                            groupMemberIds.has(m.id) ? "border-bento-accent bg-bento-accent/5" : "border-slate-50 bg-slate-50"
-                          )}
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted">Členové skupiny ({groupMemberIds.size})</label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setGroupMemberIds(new Set(modalFilteredMembers.map(m => m.id)))}
+                          className="text-[10px] font-bold text-bento-accent hover:underline"
                         >
-                          <span className={cn("text-xs font-bold", groupMemberIds.has(m.id) ? "text-bento-text-main" : "text-bento-text-muted")}>
-                            {m.name}
-                          </span>
-                          <div className={cn(
-                            "w-4 h-4 rounded border flex items-center justify-center",
-                            groupMemberIds.has(m.id) ? "bg-bento-accent border-bento-accent" : "border-slate-300 bg-white"
-                          )}>
-                            {groupMemberIds.has(m.id) && <Check className="w-3 h-3 text-white" />}
-                          </div>
+                          Vybrat nalezené
+                        </button>
+                        <span className="text-slate-300">•</span>
+                        <button
+                          type="button"
+                          onClick={() => setGroupMemberIds(new Set())}
+                          className="text-[10px] font-bold text-slate-400 hover:text-slate-600 hover:underline"
+                        >
+                          Odoznačit vše
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Search and Sort controls inside group modal */}
+                    <div className="flex flex-col sm:flex-row gap-2 mb-3">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          placeholder="Vyhledat člena..."
+                          value={modalGroupSearchQuery}
+                          onChange={(e) => setModalGroupSearchQuery(e.target.value)}
+                          className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-bento-accent/20 focus:outline-none text-xs font-bold transition-all placeholder:text-slate-400"
+                        />
+                        <Users className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        {modalGroupSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setModalGroupSearchQuery('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 hover:bg-slate-200 rounded-full transition-all"
+                          >
+                            <X className="w-3 h-3 text-slate-400" />
+                          </button>
+                        )}
+                      </div>
+
+                      <select
+                        value={modalGroupMemberSortOption}
+                        onChange={(e) => setModalGroupMemberSortOption(e.target.value as 'name' | 'age-asc' | 'age-desc')}
+                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white text-xs font-bold text-slate-700 cursor-pointer"
+                      >
+                        <option value="name">A-Z</option>
+                        <option value="age-asc">Nejmladší</option>
+                        <option value="age-desc">Nejstarší</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-2 max-h-[280px] overflow-y-auto pr-2 custom-scrollbar">
+                      {modalFilteredMembers.length > 0 ? (
+                        modalFilteredMembers.map(m => {
+                          const isChecked = groupMemberIds.has(m.id);
+                          const meta = [
+                            formatMemberAgeAndBirth(m.birthDate),
+                            m.position
+                          ].filter(Boolean).join(' • ');
+
+                          return (
+                            <div 
+                              key={m.id}
+                              onClick={() => {
+                                const newIds = new Set(groupMemberIds);
+                                if (newIds.has(m.id)) newIds.delete(m.id);
+                                else newIds.add(m.id);
+                                setGroupMemberIds(newIds);
+                              }}
+                              className={cn(
+                                "flex items-center justify-between p-3 rounded-xl border-2 transition-all cursor-pointer",
+                                isChecked ? "border-bento-accent bg-bento-accent/5" : "border-slate-50 bg-slate-50 hover:border-slate-200"
+                              )}
+                            >
+                              <div className="flex flex-col text-left min-w-0 pr-2">
+                                <span className={cn("text-xs font-bold truncate", isChecked ? "text-bento-text-main" : "text-slate-600")}>
+                                  {m.name}
+                                </span>
+                                {meta && (
+                                  <span className="text-[10px] text-slate-400 font-normal truncate mt-0.5">
+                                    {meta}
+                                  </span>
+                                )}
+                              </div>
+                              <div className={cn(
+                                "w-4 h-4 rounded border flex items-center justify-center shrink-0 ml-2 transition-colors",
+                                isChecked ? "bg-bento-accent border-bento-accent" : "border-slate-300 bg-white"
+                              )}>
+                                {isChecked && <Check className="w-3 h-3 text-white" />}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="py-8 text-center text-slate-400">
+                          <p className="text-xs font-bold">Žádný člen neodpovídá hledání</p>
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
 
@@ -2251,6 +2779,85 @@ export default function Settings({ group, period }: SettingsProps) {
                 >
                   {isBatchProcessing && <X className="w-4 h-4 animate-spin" />}
                   Kopírovat {selectedIds.size} položek
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Help Modal */}
+      <AnimatePresence>
+        {activeHelpModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setActiveHelpModal(null)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+
+            {/* Modal Content */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden text-left p-6 sm:p-8 space-y-6 z-10 my-auto"
+            >
+              {/* Header */}
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-indigo-200">
+                    <HelpCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-600 block">Detailní nápověda</span>
+                    <h3 className="font-extrabold text-slate-900 text-base leading-snug">
+                      {activeHelpModal.title}
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveHelpModal(null)}
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Description */}
+              <div className="space-y-4">
+                <div className="bg-slate-50 border border-slate-100 p-4 rounded-2xl space-y-1">
+                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500">K čemu funkce slouží:</h4>
+                  <p className="text-slate-700 text-xs sm:text-sm leading-relaxed font-medium">
+                    {activeHelpModal.description}
+                  </p>
+                </div>
+
+                {/* Example */}
+                {activeHelpModal.example && (
+                  <div className="bg-indigo-50/70 border border-indigo-100 p-4 rounded-2xl space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-indigo-700 font-bold text-xs">
+                      <Sparkles className="w-4 h-4 shrink-0 text-indigo-600" />
+                      <span>Názorný příklad:</span>
+                    </div>
+                    <p className="text-indigo-950 text-xs sm:text-sm leading-relaxed font-normal">
+                      {activeHelpModal.example}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveHelpModal(null)}
+                  className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-xs uppercase tracking-wider transition-all active:scale-[0.99] shadow-lg shadow-slate-200 cursor-pointer"
+                >
+                  Rozumím
                 </button>
               </div>
             </motion.div>
