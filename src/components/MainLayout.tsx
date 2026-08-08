@@ -272,21 +272,24 @@ export default function MainLayout({ user, group, period, onBackToPeriods, onBac
                 ))}
               </nav>
 
-              <div className="absolute bottom-8 left-8 right-8 pt-8 border-t border-slate-100">
-                <div className="flex items-center gap-4 mb-6">
+              <div className="absolute bottom-8 left-8 right-8 pt-6 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <div className="flex items-center gap-3 mb-2">
                   <img 
-                    src={user.photoURL || ''} 
+                    src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
                     alt="User" 
-                    className="w-12 h-12 rounded-2xl"
+                    className="w-10 h-10 rounded-2xl border border-slate-200 dark:border-slate-700"
                   />
-                  <div>
-                    <p className="font-bold text-slate-900">{user.displayName}</p>
-                    <p className="text-xs text-slate-400">{user.email}</p>
+                  <div className="overflow-hidden">
+                    <p className="font-bold text-slate-900 dark:text-white text-sm truncate">{user.displayName}</p>
+                    <p className="text-xs text-slate-400 truncate">{user.email}</p>
                   </div>
                 </div>
+
+                <ThemeToggle showLabel={true} />
+
                 <button 
                   onClick={onBackToGroups}
-                  className="w-full py-4 text-rose-600 font-bold hover:bg-rose-50 rounded-2xl transition-all"
+                  className="w-full py-3 text-rose-600 dark:text-rose-400 font-bold hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-2xl transition-all text-xs"
                 >
                   Přepnout Kasu
                 </button>

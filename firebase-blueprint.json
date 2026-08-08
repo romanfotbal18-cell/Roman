@@ -142,6 +142,22 @@
         "periodId": { "type": "string" }
       },
       "required": ["name", "targetAmount", "priority", "createdAt", "completed", "periodId"]
+    },
+    "RecurringFine": {
+      "title": "RecurringFine",
+      "description": "Automatic recurring fine configuration.",
+      "type": "object",
+      "properties": {
+        "reason": { "type": "string" },
+        "amount": { "type": "number" },
+        "memberIds": { "type": "array", "items": { "type": "string" } },
+        "frequency": { "type": "string" },
+        "dayOfWeek": { "type": "number" },
+        "dayOfMonth": { "type": "number" },
+        "nextDueDate": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["reason", "amount", "memberIds", "frequency", "nextDueDate", "active"]
     }
   },
   "firestore": {
@@ -184,6 +200,10 @@
     "/groups/{groupId}/periods/{periodId}/goals/{goalId}": {
       "schema": "Goal",
       "description": "Financial goals for the period."
+    },
+    "/groups/{groupId}/periods/{periodId}/recurringFines/{recurringFineId}": {
+      "schema": "RecurringFine",
+      "description": "Automatic recurring fines in a period."
     }
   }
 }

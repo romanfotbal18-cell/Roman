@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, query, onSnapshot, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, writeBatch, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, Period, Member, FineTemplate, OperationType, MemberGroup } from '../types';
-import { handleFirestoreError, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
-import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye } from 'lucide-react';
+import { Group, Period, Member, FineTemplate, OperationType, MemberGroup, RecurringFine } from '../types';
+import { handleFirestoreError, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember, checkAndExecuteRecurringFines } from '../utils';
+import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye, Zap, Repeat, Play, Pause, Trash2, Edit2, CalendarDays } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface RecordFineProps {
@@ -19,15 +19,37 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   const [members, setMembers] = useState<Member[]>([]);
   const [templates, setTemplates] = useState<FineTemplate[]>([]);
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
+  const [recurringFines, setRecurringFines] = useState<RecurringFine[]>([]);
+
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [showAllGroups, setShowAllGroups] = useState(false);
+
+  // Tab mode for fine recording
+  const [fineTab, setFineTab] = useState<'template' | 'custom' | 'recurring'>('template');
+  const [recurringSubTab, setRecurringSubTab] = useState<'create' | 'list'>('create');
+
+  // One-time fine state
   const [selectedTemplate, setSelectedTemplate] = useState<FineTemplate | null>(null);
   const [customReason, setCustomReason] = useState('');
   const [customAmount, setCustomAmount] = useState('');
-  const [isCustom, setIsCustom] = useState(false);
   const [dynamicValue, setDynamicValue] = useState('');
   const [fineCount, setFineCount] = useState(1);
+
+  // Recurring fine form state
+  const [recurringSource, setRecurringSource] = useState<'template' | 'custom'>('template');
+  const [recurringSelectedTemplate, setRecurringSelectedTemplate] = useState<FineTemplate | null>(null);
+  const [recurringCustomReason, setRecurringCustomReason] = useState('');
+  const [recurringCustomAmount, setRecurringCustomAmount] = useState('');
+  const [recurringInterval, setRecurringInterval] = useState<'monthly' | 'weekly' | 'quarterly' | 'yearly' | 'custom_days'>('monthly');
+  const [recurringIntervalDays, setRecurringIntervalDays] = useState('14');
+  const [recurringStartDate, setRecurringStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [recurringDurationType, setRecurringDurationType] = useState<'indefinite' | 'until_date' | 'max_occurrences'>('indefinite');
+  const [recurringEndDate, setRecurringEndDate] = useState('');
+  const [recurringOccurrencesLimit, setRecurringOccurrencesLimit] = useState('6');
+  const [recurringNote, setRecurringNote] = useState('');
+  const [editingRecurringFineId, setEditingRecurringFineId] = useState<string | null>(null);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
@@ -48,8 +70,12 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   };
 
   useEffect(() => {
+    // Check and execute pending automatic fines on load
+    checkAndExecuteRecurringFines(db, group.id, period.id);
+
     const membersPath = `groups/${group.id}/periods/${period.id}/members`;
     const templatesPath = `groups/${group.id}/periods/${period.id}/fineTemplates`;
+    const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
 
     const unsubMembers = onSnapshot(collection(db, membersPath), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Member[];
@@ -74,10 +100,18 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       handleFirestoreError(error, OperationType.LIST, `groups/${group.id}/periods/${period.id}/memberGroups`);
     });
 
+    const unsubRecurring = onSnapshot(collection(db, rfPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as RecurringFine[];
+      setRecurringFines(data.sort((a, b) => b.createdAt - a.createdAt));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, rfPath);
+    });
+
     return () => {
       unsubMembers();
       unsubTemplates();
       unsubMemberGroups();
+      unsubRecurring();
     };
   }, [group.id, period.id]);
 
@@ -138,11 +172,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   };
 
   const handleGroupSelection = (mg: MemberGroup) => {
-    // Get list of IDs that are both in this group and active in current period
-    // Safely handle cases where memberIds might not be a standard array
     const rawMemberIds = Array.isArray(mg.memberIds) ? mg.memberIds : [];
-    
-    // Filter out null/undefined and empty strings from memberIds
     const groupIdsStrings = rawMemberIds
       .filter(id => id !== null && id !== undefined && (typeof id === 'string' || typeof id === 'number'))
       .map(id => String(id).trim().toLowerCase());
@@ -158,15 +188,12 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
     
     if (availableIds.length === 0) return;
 
-    // Check if everything in this group is already selected
     const allInGroupSelected = availableIds.every(id => selectedMemberIds.includes(id));
 
     if (allInGroupSelected) {
-      // If already fully selected, Clicking again de-selects all members of this group
       setSelectedMemberIds(prev => prev.filter(id => !availableIds.includes(id)));
       setActiveGroupId(null);
     } else {
-      // Select all members of this group (additive)
       setSelectedMemberIds(prev => {
         const next = new Set([...prev, ...availableIds]);
         return Array.from(next);
@@ -176,13 +203,16 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   };
 
   const calculateAmount = () => {
-    if (isCustom) return (parseFloat(customAmount) || 0) * fineCount;
-    if (!selectedTemplate) return 0;
-    if (selectedTemplate.type === 'dynamic') {
-      const val = parseFloat(dynamicValue) || 0;
-      return val * selectedTemplate.amount;
+    if (fineTab === 'custom') return (parseFloat(customAmount) || 0) * fineCount;
+    if (fineTab === 'template') {
+      if (!selectedTemplate) return 0;
+      if (selectedTemplate.type === 'dynamic') {
+        const val = parseFloat(dynamicValue) || 0;
+        return val * selectedTemplate.amount;
+      }
+      return selectedTemplate.amount * fineCount;
     }
-    return selectedTemplate.amount * fineCount;
+    return 0;
   };
 
   const handleRecord = async () => {
@@ -194,11 +224,11 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
     let up = 0;
     let u = '';
     
-    if (isCustom) {
+    if (fineTab === 'custom') {
       reason = fineCount > 1 ? `${customReason} ${fineCount}x` : customReason;
       q = fineCount;
       up = parseFloat(customAmount) || 0;
-    } else if (selectedTemplate) {
+    } else if (fineTab === 'template' && selectedTemplate) {
       if (selectedTemplate.type === 'dynamic') {
         reason = `${selectedTemplate.name} (${dynamicValue} ${selectedTemplate.unit})`;
         q = parseFloat(dynamicValue) || 0;
@@ -237,7 +267,6 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
 
       await batch.commit();
 
-      // Automatically absorb fines if members have overpayments
       for (const memberId of selectedMemberIds) {
         await reconcileOverpaymentsForMember(db, group.id, period.id, memberId);
       }
@@ -248,7 +277,6 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       setCustomAmount('');
       setDynamicValue('');
       setFineCount(1);
-      setIsCustom(false);
       setSearchQuery('');
       setTemplateSearchQuery('');
       onSuccess?.();
@@ -257,6 +285,181 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleSaveRecurringFine = async () => {
+    if (isSubmitting) return;
+
+    if (selectedMemberIds.length === 0) {
+      alert('Vyberte prosím alespoň jednoho hříšníka z nabídky vlevo!');
+      return;
+    }
+
+    let reason = '';
+    let amount = 0;
+    let templateId: string | undefined = undefined;
+
+    if (recurringSource === 'template') {
+      if (!recurringSelectedTemplate) {
+        alert('Vyberte prosím položku ze sazebníku!');
+        return;
+      }
+      reason = recurringSelectedTemplate.name;
+      amount = parseFloat(recurringCustomAmount) || recurringSelectedTemplate.amount || 0;
+      templateId = recurringSelectedTemplate.id;
+    } else {
+      reason = recurringCustomReason.trim();
+      amount = parseFloat(recurringCustomAmount) || 0;
+    }
+
+    if (!reason) {
+      alert('Zadejte prosím důvod pokuty!');
+      return;
+    }
+
+    if (amount <= 0) {
+      alert('Zadejte platnou částku pokuty vyšší než 0!');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
+      const dayOfPeriod = new Date(recurringStartDate).getDate();
+
+      const payload = {
+        reason,
+        amount,
+        memberIds: selectedMemberIds,
+        interval: recurringInterval,
+        intervalDays: recurringInterval === 'custom_days' ? (parseInt(recurringIntervalDays, 10) || 14) : null,
+        dayOfPeriod,
+        startDate: recurringStartDate,
+        endDate: recurringDurationType === 'until_date' ? (recurringEndDate || null) : null,
+        durationType: recurringDurationType,
+        occurrencesLimit: recurringDurationType === 'max_occurrences' ? (parseInt(recurringOccurrencesLimit, 10) || 1) : null,
+        occurrencesCount: editingRecurringFineId ? (recurringFines.find(r => r.id === editingRecurringFineId)?.occurrencesCount || 0) : 0,
+        nextDueDate: recurringStartDate,
+        active: true,
+        groupId: group.id,
+        periodId: period.id,
+        createdAt: Date.now(),
+        templateId: templateId || null,
+        note: recurringNote.trim() || null
+      };
+
+      if (editingRecurringFineId) {
+        await updateDoc(doc(db, rfPath, editingRecurringFineId), payload);
+      } else {
+        await addDoc(collection(db, rfPath), payload);
+      }
+
+      await checkAndExecuteRecurringFines(db, group.id, period.id);
+
+      setEditingRecurringFineId(null);
+      setRecurringCustomReason('');
+      setRecurringCustomAmount('');
+      setRecurringSelectedTemplate(null);
+      setRecurringNote('');
+      setRecurringSubTab('list');
+      alert('Automatická pokuta byla úspěšně uložena!');
+      onSuccess?.();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `groups/${group.id}/periods/${period.id}/recurringFines`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleToggleActiveRecurring = async (rf: RecurringFine) => {
+    if (isReadOnly) return;
+    try {
+      const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
+      await updateDoc(doc(db, rfPath, rf.id), {
+        active: !rf.active
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'recurringFines');
+    }
+  };
+
+  const handleDeleteRecurring = async (rfId: string) => {
+    if (isReadOnly) return;
+    try {
+      const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
+      await deleteDoc(doc(db, rfPath, rfId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'recurringFines');
+    }
+  };
+
+  const handleExecuteNowRecurring = async (rf: RecurringFine) => {
+    if (isReadOnly || isSubmitting || !rf.memberIds || rf.memberIds.length === 0) return;
+    setIsSubmitting(true);
+    try {
+      const batch = writeBatch(db);
+      const timestamp = Date.now();
+
+      rf.memberIds.forEach(memberId => {
+        const fineRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/fines`));
+        batch.set(fineRef, {
+          memberId,
+          reason: `${rf.reason} (Manuální spuštění aut. pokuty)`,
+          amount: rf.amount,
+          paidAmount: 0,
+          paid: false,
+          periodId: period.id,
+          createdAt: timestamp,
+          templateId: rf.templateId || null,
+          quantity: 1,
+          unitPrice: rf.amount,
+          unit: '',
+          recurringFineId: rf.id
+        });
+      });
+
+      await batch.commit();
+
+      for (const mId of rf.memberIds) {
+        await reconcileOverpaymentsForMember(db, group.id, period.id, mId);
+      }
+
+      const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
+      await updateDoc(doc(db, rfPath, rf.id), {
+        lastGeneratedAt: new Date().toISOString().split('T')[0],
+        occurrencesCount: (rf.occurrencesCount || 0) + 1
+      });
+
+      onSuccess?.();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'fines');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleEditRecurring = (rf: RecurringFine) => {
+    setEditingRecurringFineId(rf.id);
+    setSelectedMemberIds(rf.memberIds || []);
+    if (rf.templateId) {
+      setRecurringSource('template');
+      const t = templates.find(temp => temp.id === rf.templateId);
+      setRecurringSelectedTemplate(t || null);
+    } else {
+      setRecurringSource('custom');
+      setRecurringCustomReason(rf.reason);
+      setRecurringCustomAmount(String(rf.amount));
+    }
+    setRecurringInterval(rf.interval);
+    if (rf.intervalDays) setRecurringIntervalDays(String(rf.intervalDays));
+    setRecurringStartDate(rf.startDate || new Date().toISOString().split('T')[0]);
+    setRecurringDurationType(rf.durationType || 'indefinite');
+    if (rf.endDate) setRecurringEndDate(rf.endDate);
+    if (rf.occurrencesLimit) setRecurringOccurrencesLimit(String(rf.occurrencesLimit));
+    if (rf.note) setRecurringNote(rf.note);
+
+    setFineTab('recurring');
+    setRecurringSubTab('create');
   };
 
   return (
@@ -317,7 +520,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
               {(() => {
                 const groupsToDisplay = activeGroupId 
                   ? filteredGroups.filter(g => g.id === activeGroupId) 
-                  : (showAllGroups || searchQuery ? filteredGroups : filteredGroups.slice(0, 8)); // Rough estimate for 2 rows
+                  : (showAllGroups || searchQuery ? filteredGroups : filteredGroups.slice(0, 8));
                 
                 return groupsToDisplay.map(mg => (
                   <button
@@ -401,32 +604,50 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
         </div>
 
         <div className="space-y-6">
-          <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl">
+          {/* 3 Main Fine Recording Tabs */}
+          <div className="flex gap-1.5 p-1 bg-slate-100/50 rounded-xl">
             <button
-              onClick={() => setIsCustom(false)}
+              onClick={() => setFineTab('template')}
               className={cn(
-                "flex-1 py-2 rounded-lg font-bold text-[11px] uppercase tracking-wider transition-all",
-                !isCustom ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted"
+                "flex-1 py-2 rounded-lg font-bold text-[10px] uppercase tracking-wider transition-all",
+                fineTab === 'template' ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
               )}
             >
               Ze sazebníku
             </button>
             <button
-              onClick={() => setIsCustom(true)}
+              onClick={() => setFineTab('custom')}
               className={cn(
-                "flex-1 py-2 rounded-lg font-bold text-[11px] uppercase tracking-wider transition-all",
-                isCustom ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted"
+                "flex-1 py-2 rounded-lg font-bold text-[10px] uppercase tracking-wider transition-all",
+                fineTab === 'custom' ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
               )}
             >
               Vlastní zadání
             </button>
+            <button
+              onClick={() => setFineTab('recurring')}
+              className={cn(
+                "flex-1 py-2 rounded-lg font-bold text-[10px] uppercase tracking-wider transition-all flex items-center justify-center gap-1.5",
+                fineTab === 'recurring' ? "bg-purple-600 text-white shadow-sm" : "text-purple-600 hover:bg-purple-50"
+              )}
+            >
+              <Zap className="w-3 h-3" />
+              Automatická
+              {recurringFines.length > 0 && (
+                <span className={cn(
+                  "px-1.5 py-0.2 rounded-full text-[9px] font-black",
+                  fineTab === 'recurring' ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700"
+                )}>
+                  {recurringFines.length}
+                </span>
+              )}
+            </button>
           </div>
 
-          {!isCustom ? (
+          {fineTab === 'template' ? (
             <div className="space-y-4">
               <div className="flex flex-col gap-3">
                 <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted px-1">Výběr prohřešku</label>
-                {/* Template Search */}
                 <div className="relative">
                   <input
                     type="text"
@@ -521,7 +742,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                 </motion.div>
               )}
             </div>
-          ) : (
+          ) : fineTab === 'custom' ? (
             <div className="space-y-4">
               <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Důvod pokuty</label>
@@ -558,37 +779,399 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                 </div>
               </div>
             </div>
+          ) : (
+            /* Automatic Recurring Fine View */
+            <div className="space-y-4">
+              <div className="flex gap-2 border-b border-slate-100 pb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingRecurringFineId(null);
+                    setRecurringSubTab('create');
+                  }}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5",
+                    recurringSubTab === 'create'
+                      ? "bg-purple-50 text-purple-700 border border-purple-200"
+                      : "text-slate-500 hover:bg-slate-50"
+                  )}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  {editingRecurringFineId ? 'Upravit automatickou' : 'Vytvořit novou'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecurringSubTab('list')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5",
+                    recurringSubTab === 'list'
+                      ? "bg-purple-50 text-purple-700 border border-purple-200"
+                      : "text-slate-500 hover:bg-slate-50"
+                  )}
+                >
+                  <Repeat className="w-3.5 h-3.5" />
+                  Správa ({recurringFines.length})
+                </button>
+              </div>
+
+              {recurringSubTab === 'create' ? (
+                <div className="space-y-4 text-xs font-medium max-h-[380px] overflow-y-auto pr-1 custom-scrollbar">
+                  {/* Choice: From template vs custom */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block">Zdroj pokuty</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRecurringSource('template')}
+                        className={cn(
+                          "p-2.5 rounded-xl border font-bold text-left transition-all",
+                          recurringSource === 'template' ? "border-purple-600 bg-purple-50/50 text-purple-900" : "border-slate-200 bg-slate-50 text-slate-600"
+                        )}
+                      >
+                        Ze sazebníku
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRecurringSource('custom')}
+                        className={cn(
+                          "p-2.5 rounded-xl border font-bold text-left transition-all",
+                          recurringSource === 'custom' ? "border-purple-600 bg-purple-50/50 text-purple-900" : "border-slate-200 bg-slate-50 text-slate-600"
+                        )}
+                      >
+                        Vlastní prohřešek
+                      </button>
+                    </div>
+                  </div>
+
+                  {recurringSource === 'template' ? (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block">Vyberte pokutu ze sazebníku</label>
+                      <select
+                        value={recurringSelectedTemplate?.id || ''}
+                        onChange={(e) => {
+                          const t = templates.find(temp => temp.id === e.target.value);
+                          setRecurringSelectedTemplate(t || null);
+                        }}
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                      >
+                        <option value="">-- Vyberte položku --</option>
+                        {templates.map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({t.amount} {getCurrencySymbol(group.currency)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Důvod pokuty</label>
+                        <input
+                          type="text"
+                          placeholder="Např. Měsíční klubový příspěvek"
+                          value={recurringCustomReason}
+                          onChange={(e) => setRecurringCustomReason(e.target.value)}
+                          className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Částka ({getCurrencySymbol(group.currency)})</label>
+                        <input
+                          type="number"
+                          placeholder="100"
+                          value={recurringCustomAmount}
+                          onChange={(e) => setRecurringCustomAmount(e.target.value)}
+                          className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Interval / Frequency */}
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block">Interval opakování</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {[
+                        { id: 'monthly', label: 'Měsíčně' },
+                        { id: 'weekly', label: 'Týdně' },
+                        { id: 'quarterly', label: 'Čtvrtletně' },
+                        { id: 'yearly', label: 'Ročně' },
+                        { id: 'custom_days', label: 'X dní' },
+                      ].map(opt => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setRecurringInterval(opt.id as any)}
+                          className={cn(
+                            "py-2 px-3 rounded-xl border font-bold text-center text-[11px] transition-all",
+                            recurringInterval === opt.id ? "bg-purple-600 border-purple-600 text-white shadow-sm" : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {recurringInterval === 'custom_days' && (
+                      <div className="mt-2">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Počet dní mezi zápisy</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={recurringIntervalDays}
+                          onChange={(e) => setRecurringIntervalDays(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Start Date */}
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block">Datum prvního zápisu</label>
+                    <input
+                      type="date"
+                      value={recurringStartDate}
+                      onChange={(e) => setRecurringStartDate(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700"
+                    />
+                  </div>
+
+                  {/* Duration / Expiration ("trvanlivost jak dlouho má jet pokuta") */}
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block">Trvanlivost (Jak dlouho má jet pokuta?)</label>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer font-bold text-[11px]">
+                        <input
+                          type="radio"
+                          name="durationType"
+                          checked={recurringDurationType === 'indefinite'}
+                          onChange={() => setRecurringDurationType('indefinite')}
+                          className="text-purple-600 focus:ring-purple-500"
+                        />
+                        <span>Do odvolání (trvalá)</span>
+                      </label>
+
+                      <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer font-bold text-[11px]">
+                        <input
+                          type="radio"
+                          name="durationType"
+                          checked={recurringDurationType === 'until_date'}
+                          onChange={() => setRecurringDurationType('until_date')}
+                          className="text-purple-600 focus:ring-purple-500"
+                        />
+                        <span>Do určitého data</span>
+                      </label>
+
+                      {recurringDurationType === 'until_date' && (
+                        <div className="pl-6">
+                          <input
+                            type="date"
+                            value={recurringEndDate}
+                            onChange={(e) => setRecurringEndDate(e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold"
+                          />
+                        </div>
+                      )}
+
+                      <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer font-bold text-[11px]">
+                        <input
+                          type="radio"
+                          name="durationType"
+                          checked={recurringDurationType === 'max_occurrences'}
+                          onChange={() => setRecurringDurationType('max_occurrences')}
+                          className="text-purple-600 focus:ring-purple-500"
+                        />
+                        <span>Určitý počet opakování</span>
+                      </label>
+
+                      {recurringDurationType === 'max_occurrences' && (
+                        <div className="pl-6">
+                          <input
+                            type="number"
+                            min="1"
+                            placeholder="Např. 6"
+                            value={recurringOccurrencesLimit}
+                            onChange={(e) => setRecurringOccurrencesLimit(e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Selected Members Summary */}
+                  <div className="p-3 bg-purple-50/50 border border-purple-100 rounded-xl space-y-1">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-purple-700">Příjemci automatické pokuty</p>
+                    <p className="text-xs font-bold text-slate-800">
+                      {selectedMemberIds.length > 0
+                        ? `Vybráno ${selectedMemberIds.length} členů (zvoleno vlevo)`
+                        : '⚠️ Vyberte hříšníky v levém panelu!'}
+                    </p>
+                  </div>
+
+                  {/* Save Button */}
+                  <button
+                    type="button"
+                    onClick={handleSaveRecurringFine}
+                    disabled={isReadOnly || isSubmitting}
+                    className="btn-bento-primary w-full py-3.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-lg shadow-purple-600/20 disabled:opacity-40"
+                  >
+                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                    {editingRecurringFineId ? 'Uložit změny' : 'Vytvořit automatickou pokutu'}
+                  </button>
+                </div>
+              ) : (
+                /* List of Automatic Fines */
+                <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1 custom-scrollbar">
+                  {recurringFines.length > 0 ? (
+                    recurringFines.map(rf => {
+                      const isExpired =
+                        (rf.durationType === 'until_date' && rf.endDate && rf.nextDueDate > rf.endDate) ||
+                        (rf.durationType === 'max_occurrences' && rf.occurrencesLimit && (rf.occurrencesCount || 0) >= rf.occurrencesLimit);
+
+                      return (
+                        <div
+                          key={rf.id}
+                          className={cn(
+                            "p-3.5 rounded-xl border transition-all space-y-2",
+                            !rf.active
+                              ? "bg-slate-50 border-slate-200 opacity-60"
+                              : isExpired
+                              ? "bg-amber-50/30 border-amber-200 opacity-70"
+                              : "bg-white border-purple-100 shadow-sm hover:border-purple-300"
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <h4 className="font-bold text-sm text-slate-800 leading-tight">{rf.reason}</h4>
+                              <p className="text-xs font-black text-purple-600 mt-0.5">
+                                {rf.amount} {getCurrencySymbol(group.currency)}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={cn(
+                                  "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider",
+                                  !rf.active
+                                    ? "bg-slate-200 text-slate-600"
+                                    : isExpired
+                                    ? "bg-amber-100 text-amber-800"
+                                    : "bg-emerald-100 text-emerald-800"
+                                )}
+                              >
+                                {!rf.active ? 'Pozastaveno' : isExpired ? 'Ukončeno' : 'Aktivní'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-1.5 text-[10px] font-medium text-slate-500 pt-1 border-t border-slate-100">
+                            <div>
+                              <span className="font-bold text-slate-700 block">Interval:</span>
+                              {rf.interval === 'monthly' && 'Měsíčně'}
+                              {rf.interval === 'weekly' && 'Týdně'}
+                              {rf.interval === 'quarterly' && 'Čtvrtletně'}
+                              {rf.interval === 'yearly' && 'Ročně'}
+                              {rf.interval === 'custom_days' && `Každých ${rf.intervalDays || 14} dní`}
+                            </div>
+                            <div>
+                              <span className="font-bold text-slate-700 block">Trvanlivost:</span>
+                              {rf.durationType === 'indefinite' && 'Do odvolání'}
+                              {rf.durationType === 'until_date' && `Do ${rf.endDate}`}
+                              {rf.durationType === 'max_occurrences' && `Opakování: ${rf.occurrencesCount || 0}/${rf.occurrencesLimit}`}
+                            </div>
+                            <div>
+                              <span className="font-bold text-slate-700 block">Příští zápis:</span>
+                              <span className="font-bold text-purple-700">{rf.nextDueDate}</span>
+                            </div>
+                            <div>
+                              <span className="font-bold text-slate-700 block">Členů:</span>
+                              {rf.memberIds?.length || 0} vybraných
+                            </div>
+                          </div>
+
+                          {/* Action Buttons */}
+                          {!isReadOnly && (
+                            <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-100">
+                              <button
+                                type="button"
+                                onClick={() => handleExecuteNowRecurring(rf)}
+                                title="Zapsat ihned všem vybraným členům"
+                                className="px-2 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all"
+                              >
+                                <Play className="w-3 h-3" /> Zapsat ihned
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleActiveRecurring(rf)}
+                                className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all"
+                                title={rf.active ? 'Pozastavit' : 'Aktivovat'}
+                              >
+                                {rf.active ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEditRecurring(rf)}
+                                className="p-1.5 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all"
+                                title="Upravit"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRecurring(rf.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                title="Smazat"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="py-8 text-center text-slate-400">
+                      <Repeat className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                      <p className="text-xs font-bold">Žádné automatické pokuty nebyly vytvořeny.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
-          <div className="pt-6 border-t border-bento-card-border">
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Výsledek</p>
-                <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} {getCurrencySymbol(group.currency)}</p>
-                <p className="text-[10px] font-medium text-bento-text-muted mt-2">pro každého z {selectedMemberIds.length} členů</p>
+          {fineTab !== 'recurring' && (
+            <div className="pt-6 border-t border-bento-card-border">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Výsledek</p>
+                  <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} {getCurrencySymbol(group.currency)}</p>
+                  <p className="text-[10px] font-medium text-bento-text-muted mt-2">pro každého z {selectedMemberIds.length} členů</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Celkem</p>
+                  <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} {getCurrencySymbol(group.currency)}</p>
+                </div>
               </div>
-              <div className="text-right">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Celkem</p>
-                <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} {getCurrencySymbol(group.currency)}</p>
-              </div>
+
+              {isReadOnly && (
+                <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4 text-center flex items-center justify-center gap-2">
+                  <Eye className="w-4 h-4 text-amber-600" />
+                  Jste v režimu Pouze pro čtení. Nemáte oprávnění zapisovat pokuty.
+                </p>
+              )}
+
+              <button
+                onClick={handleRecord}
+                disabled={isReadOnly || selectedMemberIds.length === 0 || calculateAmount() <= 0 || isSubmitting}
+                className="btn-bento-primary w-full py-4 text-sm font-bold shadow-xl shadow-bento-accent/10 disabled:opacity-40"
+              >
+                {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {isReadOnly ? 'Zápis zakázán (Čtenář)' : 'Zapsat do systému'}
+              </button>
             </div>
-
-            {isReadOnly && (
-              <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4 text-center flex items-center justify-center gap-2">
-                <Eye className="w-4 h-4 text-amber-600" />
-                Jste v režimu Pouze pro čtení. Nemáte oprávnění zapisovat pokuty.
-              </p>
-            )}
-
-            <button
-              onClick={handleRecord}
-              disabled={isReadOnly || selectedMemberIds.length === 0 || calculateAmount() <= 0 || isSubmitting}
-              className="btn-bento-primary w-full py-4 text-sm font-bold shadow-xl shadow-bento-accent/10 disabled:opacity-40"
-            >
-              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              {isReadOnly ? 'Zápis zakázán (Čtenář)' : 'Zapsat do systému'}
-            </button>
-          </div>
+          )}
         </div>
       </div>
     </div>

@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch, getDocs, where, setDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole, GroupEnabledFeatures } from '../types';
-import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency, isFeatureEnabled } from '../utils';
-import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2, Sliders, Target, Folder, PieChart, Wallet, HelpCircle, Sparkles } from 'lucide-react';
+import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency, isFeatureEnabled, getRecurringFineOccurrencesInRange } from '../utils';
+import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2, Sliders, Target, Folder, PieChart, Wallet, HelpCircle, Sparkles, QrCode, Upload, Image as ImageIcon, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -36,6 +36,7 @@ export default function Settings({ group, period }: SettingsProps) {
   const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [recurringFines, setRecurringFines] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'bank' | 'sharing' | 'modules'>('templates');
 
   const handleToggleFeature = async (featureKey: keyof GroupEnabledFeatures) => {
@@ -65,6 +66,7 @@ export default function Settings({ group, period }: SettingsProps) {
   const [bankName, setBankName] = useState(group.bankName || '');
   const [bankNote, setBankNote] = useState(group.bankNote || '');
   const [bankVS, setBankVS] = useState(group.bankVS || '');
+  const [bankQrCodeUrl, setBankQrCodeUrl] = useState(group.bankQrCodeUrl || '');
   const [isSavingBank, setIsSavingBank] = useState(false);
   const [bankSaveSuccess, setBankSaveSuccess] = useState(false);
 
@@ -73,7 +75,24 @@ export default function Settings({ group, period }: SettingsProps) {
     setBankName(group.bankName || '');
     setBankNote(group.bankNote || '');
     setBankVS(group.bankVS || '');
+    setBankQrCodeUrl(group.bankQrCodeUrl || '');
   }, [group]);
+
+  const handleQrFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Soubor je příliš velký (max 5MB).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      if (event.target?.result) {
+        setBankQrCodeUrl(event.target.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleSaveBankDetails = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -84,7 +103,8 @@ export default function Settings({ group, period }: SettingsProps) {
         bankAccount: bankAccount.trim(),
         bankName: bankName.trim(),
         bankNote: bankNote.trim(),
-        bankVS: bankVS.trim()
+        bankVS: bankVS.trim(),
+        bankQrCodeUrl: bankQrCodeUrl.trim()
       });
       setBankSaveSuccess(true);
       setTimeout(() => setBankSaveSuccess(false), 3000);
@@ -261,11 +281,18 @@ export default function Settings({ group, period }: SettingsProps) {
       handleFirestoreError(error, OperationType.LIST, `groups/${group.id}/periods/${period.id}/events`);
     });
 
+    const unsubRecurring = onSnapshot(collection(db, `groups/${group.id}/periods/${period.id}/recurringFines`), (snapshot) => {
+      setRecurringFines(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `groups/${group.id}/periods/${period.id}/recurringFines`);
+    });
+
     return () => {
       unsubMembers();
       unsubTemplates();
       unsubMemberGroups();
       unsubEvents();
+      unsubRecurring();
     };
   }, [group.id, period.id]);
 
@@ -763,6 +790,26 @@ export default function Settings({ group, period }: SettingsProps) {
     }));
   }, [members]);
 
+  const nearestRecurringFineEvents = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const active = recurringFines
+      .filter(rf => rf.active && rf.nextDueDate && rf.nextDueDate >= today)
+      .sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+
+    if (active.length === 0) return [];
+
+    // Nearest upcoming automatic fine
+    const nearest = active[0];
+    return [{
+      id: `recurring-${nearest.id}`,
+      name: `⚡ Aut. pokuta: ${nearest.reason} (${formatCurrency(nearest.amount, group.currency)})`,
+      date: nearest.nextDueDate,
+      isRecurringFine: true,
+      description: `Automaticky předepsat v nastaveném intervalu (${nearest.interval})`,
+      recurringFine: nearest
+    }];
+  }, [recurringFines, group.currency]);
+
   const allCalendarItems = useMemo(() => {
     const birthdayItems = birthdayEvents.map(b => {
       // For calendar, we need to show birthdays in the current calendar year/view
@@ -778,8 +825,19 @@ export default function Settings({ group, period }: SettingsProps) {
       };
     });
 
-    return [...events, ...birthdayItems];
-  }, [events, birthdayEvents, calendarDate]);
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const monthStartStr = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const lastDayNum = new Date(year, month + 1, 0).getDate();
+    const monthEndStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDayNum).padStart(2, '0')}`;
+
+    const currencySymbol = getCurrencySymbol(group.currency);
+    const recurringEventsForMonth = recurringFines.flatMap(rf => 
+      getRecurringFineOccurrencesInRange(rf, monthStartStr, monthEndStr, currencySymbol)
+    );
+
+    return [...events, ...birthdayItems, ...recurringEventsForMonth];
+  }, [events, birthdayEvents, recurringFines, group.currency, calendarDate]);
 
   const sortedEventsAndBirthdays = useMemo(() => {
     const virtualBirthdays = birthdayEvents.map(b => {
@@ -806,11 +864,13 @@ export default function Settings({ group, period }: SettingsProps) {
 
     let combined: any[] = [];
     if (eventFilter === 'all') {
-      combined = [...events, ...virtualBirthdays];
+      combined = [...events, ...virtualBirthdays, ...nearestRecurringFineEvents];
     } else if (eventFilter === 'important') {
       combined = events.filter(e => e.isImportant);
     } else if (eventFilter === 'birthdays') {
       combined = virtualBirthdays;
+    } else if (eventFilter === 'recurring') {
+      combined = nearestRecurringFineEvents;
     }
 
     if (eventSearchTerm.trim()) {
@@ -1465,6 +1525,7 @@ export default function Settings({ group, period }: SettingsProps) {
                     <option value="all">Vše</option>
                     <option value="important">Důležité</option>
                     <option value="birthdays">Narozeniny</option>
+                    <option value="recurring">Automatické pokuty</option>
                   </select>
                 </div>
               </div>
@@ -1491,14 +1552,16 @@ export default function Settings({ group, period }: SettingsProps) {
             <div className="lg:col-span-7 space-y-4">
               <div className="bento-card bg-white shadow-sm overflow-hidden p-0 divide-y divide-bento-card-border">
                 {sortedEventsAndBirthdays.length > 0 ? sortedEventsAndBirthdays.map(item => {
-                  const isBirthday = 'isBirthday' in item;
+                  const isBirthday = 'isBirthday' in item && item.isBirthday;
+                  const isRecurringFine = 'isRecurringFine' in item && item.isRecurringFine;
                   return (
                     <div 
                       key={item.id} 
                       className={cn(
                         "p-5 flex items-center justify-between border-l-4 transition-all",
                         isBirthday ? "border-l-indigo-400 bg-indigo-50/10" : 
-                        (item.isImportant ? "border-l-rose-500 bg-rose-50/10" : "border-l-transparent hover:bg-slate-50")
+                        (isRecurringFine ? "border-l-purple-500 bg-purple-50/10" :
+                        (item.isImportant ? "border-l-rose-500 bg-rose-50/10" : "border-l-transparent hover:bg-slate-50"))
                       )}
                     >
                       <div className="flex items-center gap-5 min-w-0 flex-1">
@@ -1521,11 +1584,16 @@ export default function Settings({ group, period }: SettingsProps) {
                             {isBirthday && (
                               <Cake className="w-3.5 h-3.5 text-indigo-500" />
                             )}
+                            {isRecurringFine && (
+                              <span className="bg-purple-600 text-white text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-sm">
+                                Aut. pokuta
+                              </span>
+                            )}
                           </div>
                           {item.description && (
                             <p className="text-xs text-bento-text-muted mt-1 line-clamp-1">{item.description}</p>
                           )}
-                          {!isBirthday && (
+                          {!isBirthday && !isRecurringFine && (
                             <p className="text-[10px] font-black uppercase tracking-widest text-bento-accent/60 mt-1.5">
                               {new Date(item.date).getFullYear()} • {new Date(item.date).toLocaleDateString('cs-CZ', { weekday: 'long' })}
                             </p>
@@ -1535,10 +1603,15 @@ export default function Settings({ group, period }: SettingsProps) {
                               Narozeniny
                             </p>
                           )}
+                          {isRecurringFine && (
+                            <p className="text-[10px] font-black uppercase tracking-widest text-purple-600/70 mt-1.5">
+                              Nejbližší automatická pokuta
+                            </p>
+                          )}
                         </div>
                       </div>
                       
-                      {!isBirthday && (
+                      {!isBirthday && !isRecurringFine && (
                         <div className="flex gap-1.5 shrink-0">
                           <button
                             onClick={() => {
@@ -1771,6 +1844,69 @@ export default function Settings({ group, period }: SettingsProps) {
                 />
               </div>
 
+              {/* QR Code Section */}
+              <div className="pt-2 border-t border-slate-100 space-y-3">
+                <label className="text-[11px] font-black uppercase tracking-wider text-bento-text-muted flex items-center gap-2">
+                  <QrCode className="w-4 h-4 text-indigo-600" />
+                  <span>QR kód pro platbu</span>
+                  <span className="text-slate-400 font-normal">(volitelné)</span>
+                </label>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+                  <div className="space-y-2">
+                    <p className="text-xs text-slate-500">
+                      Nahrajte obrázek QR kódu z vašeho bankovnictví nebo vložte odkaz na obrázek.
+                    </p>
+                    
+                    <label className={cn(
+                      "flex items-center justify-center gap-2 px-4 py-3 bg-indigo-50/60 border border-dashed border-indigo-300 rounded-xl cursor-pointer hover:bg-indigo-100/80 transition-all text-xs font-bold text-indigo-800",
+                      isReadOnly && "pointer-events-none opacity-50"
+                    )}>
+                      <Upload className="w-4 h-4 text-indigo-600" />
+                      <span>{bankQrCodeUrl ? 'Změnit obrázek QR kódu' : 'Nahrát obrázek QR kódu'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleQrFileUpload}
+                        disabled={isReadOnly}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <div className="pt-1">
+                      <span className="text-[10px] font-bold text-slate-400 block mb-1">Nebo vložte URL adresu obrázku:</span>
+                      <input
+                        type="text"
+                        placeholder="https://..."
+                        value={bankQrCodeUrl}
+                        onChange={(e) => setBankQrCodeUrl(e.target.value)}
+                        disabled={isReadOnly}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {bankQrCodeUrl && (
+                    <div className="p-3 bg-white border border-indigo-100 rounded-2xl flex flex-col items-center justify-center gap-2 relative">
+                      <img
+                        src={bankQrCodeUrl}
+                        alt="QR Platba"
+                        className="w-32 h-32 object-contain rounded-xl border border-slate-100 bg-white"
+                      />
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={() => setBankQrCodeUrl('')}
+                          className="text-[10px] text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" /> Odstranit QR kód
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {!isReadOnly ? (
                 <div className="flex items-center gap-3 pt-2">
                   <button
@@ -1801,7 +1937,7 @@ export default function Settings({ group, period }: SettingsProps) {
                 <span className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-3">
                   Náhled zobrazení pro dlužníky
                 </span>
-                <div className="p-4 bg-slate-50 border border-indigo-100 rounded-2xl space-y-2">
+                <div className="p-4 bg-slate-50 border border-indigo-100 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
                       <Building2 className="w-4 h-4" />
@@ -1822,6 +1958,18 @@ export default function Settings({ group, period }: SettingsProps) {
                     <p className="text-xs text-slate-500 italic">
                        Poznámka: {bankNote}
                     </p>
+                  )}
+                  {bankQrCodeUrl && (
+                    <div className="pt-2 border-t border-indigo-100 flex items-center gap-4 bg-white p-3 rounded-xl">
+                      <img src={bankQrCodeUrl} alt="QR platba" className="w-20 h-20 object-contain rounded-lg border" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                          <QrCode className="w-3.5 h-3.5 text-indigo-600" />
+                          QR platba k dispozici
+                        </p>
+                        <p className="text-[11px] text-slate-500">Členové si mohou naskenovat, zkopírovat nebo stáhnout QR kód pro rychlou úhradu.</p>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>

@@ -26,6 +26,7 @@ export interface Group {
   bankName?: string;
   bankNote?: string;
   bankVS?: string;
+  bankQrCodeUrl?: string;
   ownerEmail?: string;
   memberUids?: string[];
   allowedEmails?: string[];
@@ -92,6 +93,33 @@ export interface Fine {
   quantity?: number;
   unitPrice?: number;
   unit?: string;
+  recurringFineId?: string;
+}
+
+export interface RecurringFine {
+  id: string;
+  reason: string;
+  amount: number;
+  memberIds: string[];
+  interval: 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'custom_days';
+  intervalDays?: number;
+  dayOfPeriod?: number; // Day of month (1-31) or Day of week (1=Mon..7=Sun)
+  startDate: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
+  durationType: 'indefinite' | 'until_date' | 'max_occurrences';
+  occurrencesLimit?: number;
+  occurrencesCount?: number;
+  lastGeneratedAt?: string; // YYYY-MM-DD
+  nextDueDate: string; // YYYY-MM-DD
+  active: boolean;
+  groupId: string;
+  periodId: string;
+  createdAt: number;
+  templateId?: string;
+  quantity?: number;
+  unitPrice?: number;
+  unit?: string;
+  note?: string;
 }
 
 export interface Payment {

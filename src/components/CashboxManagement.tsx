@@ -3,8 +3,9 @@ import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, order
 import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member, Envelope } from '../types';
 import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled } from '../utils';
-import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen } from 'lucide-react';
+import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen, FileSpreadsheet } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ExportFinanceModal from './ExportFinanceModal';
 
 interface CashboxManagementProps {
   group: Group;
@@ -68,6 +69,9 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
   // Delete Envelope Confirmation
   const [deleteEnvelopeConfirmId, setDeleteEnvelopeConfirmId] = useState<string | null>(null);
+
+  // Export Modal State
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   const incomeCategories = ['Zůstatek', 'Pokuta', 'Sponzor', 'Příspěvek', 'Jiné'];
   const expenseCategories = ['Akce', 'Nákup', 'Služby', 'Cestovné', 'Občerstvení', 'Jiné'];
@@ -743,14 +747,28 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                 <span>+ Nová obálka</span>
               </button>
             )}
+            <button
+              onClick={() => setIsExportModalOpen(true)}
+              className="flex-1 sm:flex-initial bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 py-2.5 px-4 text-xs uppercase tracking-wider font-bold rounded-2xl flex items-center justify-center gap-2 transition-all"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Export financí</span>
+            </button>
           </div>
         </div>
       ) : (
-        <div className="bg-amber-50 border border-amber-200 rounded-3xl p-4 flex items-center justify-center text-center">
+        <div className="bg-amber-50 border border-amber-200 rounded-3xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
           <p className="text-xs font-bold text-amber-800 flex items-center gap-2">
             <Eye className="w-5 h-5 text-amber-600 shrink-0" />
             <span>Režim čtenáře — operace v pokladně jsou zakázány.</span>
           </p>
+          <button
+            onClick={() => setIsExportModalOpen(true)}
+            className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 py-2 px-3 text-xs uppercase tracking-wider font-bold rounded-xl flex items-center gap-2 shadow-xs"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            <span>Export financí</span>
+          </button>
         </div>
       )}
 
@@ -1952,6 +1970,14 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
           </div>
         )}
       </AnimatePresence>
+
+      {/* Export Finance Modal */}
+      <ExportFinanceModal
+        group={group}
+        period={period}
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+      />
     </div>
   );
 }

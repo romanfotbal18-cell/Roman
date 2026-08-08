@@ -3,9 +3,10 @@ import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc,
 import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
 import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
-import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check } from 'lucide-react';
+import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check, FileSpreadsheet, QrCode } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
+import ExportFinanceModal from './ExportFinanceModal';
 
 interface DebtListProps {
   group: Group;
@@ -29,6 +30,7 @@ export default function DebtList({ group, period }: DebtListProps) {
   const [purchaseRecipient, setPurchaseRecipient] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [copiedText, setCopiedText] = useState<string | null>(null);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   const handleCopyText = (text: string, label: string) => {
     if (!text) return;
@@ -39,14 +41,48 @@ export default function DebtList({ group, period }: DebtListProps) {
     }, 2000);
   };
 
+  const handleDownloadQr = (qrUrl: string) => {
+    if (!qrUrl) return;
+    const link = document.createElement('a');
+    link.href = qrUrl;
+    link.download = `QR-platba-${group.name || 'kasa'}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleCopyQrImage = async (qrUrl: string, label: string = 'qr_img') => {
+    if (!qrUrl) return;
+    try {
+      if (qrUrl.startsWith('data:image')) {
+        const res = await fetch(qrUrl);
+        const blob = await res.blob();
+        await navigator.clipboard.write([
+          new ClipboardItem({ [blob.type]: blob })
+        ]);
+      } else {
+        await navigator.clipboard.writeText(qrUrl);
+      }
+      setCopiedText(label);
+      setTimeout(() => setCopiedText(null), 2000);
+    } catch (err) {
+      await navigator.clipboard.writeText(qrUrl);
+      setCopiedText(label);
+      setTimeout(() => setCopiedText(null), 2000);
+    }
+  };
+
   const exportToExcel = () => {
-    const sortedForExport = [...members].sort((a, b) => getMemberDebt(b.id) - getMemberDebt(a.id));
+    const sortedForExport = members
+      .filter(m => m.active !== false && !(m as any).isDeleted && !(m as any).deleted)
+      .sort((a, b) => getMemberDebt(b.id) - getMemberDebt(a.id));
+
     const exportData = sortedForExport
       .map(member => {
         const balance = getMemberDebt(member.id);
         if (balance === 0) return null;
 
-        const unpaidMemberFines = fines.filter(f => f.memberId === member.id && !f.paid);
+        const unpaidMemberFines = fines.filter(f => f.memberId === member.id && !f.paid && (!f.periodId || f.periodId === period.id) && !(f as any).isDeleted && !(f as any).deleted);
         const descriptions = unpaidMemberFines.map(f => {
           const remaining = f.amount - (f.paidAmount || 0);
           return `${f.reason} (${formatCurrency(remaining, group.currency)})`;
@@ -375,12 +411,12 @@ export default function DebtList({ group, period }: DebtListProps) {
             />
           </div>
           <button
-            onClick={exportToExcel}
-            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-bento-card-border rounded-xl hover:border-bento-accent/30 hover:bg-slate-50 transition-all text-sm font-black uppercase tracking-widest text-bento-text-muted hover:text-bento-accent shadow-sm active:scale-95 shrink-0"
-            title="Exportovat do Excelu"
+            onClick={() => setIsExportModalOpen(true)}
+            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-bento-card-border rounded-xl hover:border-emerald-300 hover:bg-emerald-50/50 transition-all text-sm font-black uppercase tracking-widest text-slate-700 hover:text-emerald-700 shadow-sm active:scale-95 shrink-0"
+            title="Exportovat přehled financí"
           >
-            <Download className="w-4 h-4" />
-            <span className="sm:hidden lg:inline">Exportovat</span>
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            <span className="sm:hidden lg:inline">Export financí</span>
           </button>
         </div>
 
@@ -574,11 +610,23 @@ export default function DebtList({ group, period }: DebtListProps) {
 
                 <div className="pt-6 border-t border-bento-card-border">
                   <div className="flex flex-col gap-4">
-                    <div className="flex justify-between items-end">
+                    {/* Debt amount & Record Payment button */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-slate-50 border border-slate-100 rounded-2xl">
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-bento-text-muted mb-1">Dlužná částka</p>
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-bento-text-muted">Dlužná částka</p>
+                          {getMemberDebt(selectedMember.id) > 0 ? (
+                            <div className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 bg-rose-50 text-rose-500 rounded-md animate-pulse">
+                              Nevyrovnáno
+                            </div>
+                          ) : (getMemberDebt(selectedMember.id) < 0 && (
+                            <div className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 bg-indigo-50 text-indigo-500 rounded-md">
+                              Přeplatek
+                            </div>
+                          ))}
+                        </div>
                         <p className={cn(
-                          "text-4xl font-black tracking-tighter leading-none",
+                          "text-3xl font-black tracking-tighter leading-none",
                           getMemberDebt(selectedMember.id) < 0 ? "text-indigo-600" : "text-bento-text-main"
                         )}>
                           {getMemberDebt(selectedMember.id) < 0 
@@ -586,16 +634,28 @@ export default function DebtList({ group, period }: DebtListProps) {
                             : formatCurrency(getMemberDebt(selectedMember.id), group.currency)}
                         </p>
                       </div>
-                      {getMemberDebt(selectedMember.id) > 0 ? (
-                        <div className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1.5 bg-rose-50 text-rose-500 rounded-lg animate-pulse">
-                          Nevyrovnáno
-                        </div>
-                      ) : (getMemberDebt(selectedMember.id) < 0 && (
-                        <div className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1.5 bg-indigo-50 text-indigo-500 rounded-lg">
-                          Přeplatek
-                        </div>
-                      ))}
+
+                      {!isReadOnly ? (
+                        <button
+                          onClick={() => {
+                            const debt = getMemberDebt(selectedMember.id);
+                            setPaymentAmount(debt > 0 ? debt.toString() : '');
+                            setPaymentDate(new Date().toISOString().split('T')[0]);
+                            setIsPaymentModalOpen(true);
+                          }}
+                          className="btn-bento-primary px-5 py-3 rounded-xl shadow-lg shadow-bento-accent/15 flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-95 shrink-0"
+                        >
+                          <CreditCard className="w-4 h-4" />
+                          <span className="text-xs font-bold">Zapsat platbu</span>
+                        </button>
+                      ) : (
+                        <p className="text-xs text-amber-700 bg-amber-50 px-3 py-2 rounded-xl border border-amber-200 font-bold flex items-center gap-2">
+                          <Eye className="w-3.5 h-3.5 text-amber-600" />
+                          Režim Čtenáře
+                        </p>
+                      )}
                     </div>
+
                     {/* Bank Account Connection for Debt Repayment */}
                     <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-2xl space-y-3">
                       <div className="flex items-center justify-between">
@@ -668,6 +728,36 @@ export default function DebtList({ group, period }: DebtListProps) {
                               )}
                             </div>
                           )}
+
+                          {group.bankQrCodeUrl && (
+                            <div className="p-3 bg-white rounded-xl border border-indigo-200/80 space-y-2 text-center shadow-2xs">
+                              <span className="text-[10px] font-black uppercase tracking-wider text-indigo-900 block flex items-center justify-center gap-1">
+                                <QrCode className="w-3.5 h-3.5 text-indigo-600" />
+                                <span>QR kód pro platbu</span>
+                              </span>
+                              <div className="flex justify-center">
+                                <img src={group.bankQrCodeUrl} alt="QR Platba" className="w-20 h-20 object-contain rounded-lg border border-slate-100 p-1 bg-white" />
+                              </div>
+                              <div className="flex items-center justify-center gap-2 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyQrImage(group.bankQrCodeUrl!, 'qr_img_modal')}
+                                  className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-bold flex items-center gap-1.5 border border-indigo-200 transition-all active:scale-95"
+                                >
+                                  {copiedText === 'qr_img_modal' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                  <span>{copiedText === 'qr_img_modal' ? 'Zkopírováno!' : 'Kopírovat'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadQr(group.bankQrCodeUrl!)}
+                                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold flex items-center gap-1.5 border border-emerald-200 transition-all active:scale-95"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  <span>Stáhnout</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-2.5 bg-white/80 rounded-xl border border-indigo-100 text-[11px] text-slate-500 font-medium leading-relaxed">
@@ -675,26 +765,6 @@ export default function DebtList({ group, period }: DebtListProps) {
                         </div>
                       )}
                     </div>
-
-                    {!isReadOnly ? (
-                      <button
-                        onClick={() => {
-                          const debt = getMemberDebt(selectedMember.id);
-                          setPaymentAmount(debt > 0 ? debt.toString() : '');
-                          setPaymentDate(new Date().toISOString().split('T')[0]);
-                          setIsPaymentModalOpen(true);
-                        }}
-                        className="btn-bento-primary w-full py-4 rounded-2xl shadow-xl shadow-bento-accent/15 flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-98"
-                      >
-                        <CreditCard className="w-5 h-5" />
-                        <span className="text-sm font-bold">Zapsat platbu</span>
-                      </button>
-                    ) : (
-                      <p className="text-xs text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 text-center font-bold flex items-center justify-center gap-2">
-                        <Eye className="w-4 h-4 text-amber-600" />
-                        Režim Čtenáře — zápis plateb není povolen.
-                      </p>
-                    )}
                   </div>
                 </div>
 
@@ -868,6 +938,36 @@ export default function DebtList({ group, period }: DebtListProps) {
                         <span>{copiedText === 'modal_account' ? 'Zkopírováno' : 'Kopírovat'}</span>
                       </button>
                     </div>
+
+                    {group.bankQrCodeUrl && (
+                      <div className="pt-2 border-t border-indigo-100 flex items-center gap-3 bg-white p-2.5 rounded-lg">
+                        <img src={group.bankQrCodeUrl} alt="QR Platba" className="w-16 h-16 object-contain rounded border" />
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                            <QrCode className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>QR kód pro platbu</span>
+                          </p>
+                          <div className="flex gap-2 mt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyQrImage(group.bankQrCodeUrl!, 'qr_modal_pay')}
+                              className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold flex items-center gap-1"
+                            >
+                              {copiedText === 'qr_modal_pay' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedText === 'qr_modal_pay' ? 'Zkopírováno' : 'Kopírovat'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadQr(group.bankQrCodeUrl!)}
+                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold flex items-center gap-1"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Stáhnout</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1085,6 +1185,13 @@ export default function DebtList({ group, period }: DebtListProps) {
           </div>
         )}
       </AnimatePresence>
+
+      <ExportFinanceModal
+        group={group}
+        period={period}
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+      />
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled, checkAndExecuteRecurringFines, getRecurringFineOccurrencesInRange } from '../utils';
+import ExportFinanceModal from './ExportFinanceModal';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -18,6 +19,7 @@ import {
   BarChart3,
   Activity,
   Eraser,
+  FileSpreadsheet,
   RefreshCcw,
   RotateCcw,
   Calendar as CalendarIcon,
@@ -61,7 +63,7 @@ import {
   Bar,
   Legend
 } from 'recharts';
-import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal, Envelope } from '../types';
+import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal, Envelope, RecurringFine } from '../types';
 
 interface DashboardProps {
   group: Group;
@@ -87,6 +89,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const [members, setMembers] = useState<Member[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [recurringFines, setRecurringFines] = useState<RecurringFine[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
   const [dashboardCardView, setDashboardCardView] = useState<'goals' | 'envelopes'>(() => {
@@ -105,9 +108,11 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [activeStatView, setActiveStatView] = useState<StatView>('sponsors');
   const [resetConfirm, setResetConfirm] = useState<{ name: string, field: string } | null>(null);
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [calendarFilter, setCalendarFilter] = useState<'all' | 'ordinary' | 'important' | 'birthdays' | 'recurring'>('all');
 
   const [newGoalName, setNewGoalName] = useState('');
   const [newGoalAmount, setNewGoalAmount] = useState('');
@@ -199,6 +204,16 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       handleFirestoreError(error, OperationType.LIST, envelopesPath);
     });
 
+    const rfPath = `groups/${group.id}/periods/${period.id}/recurringFines`;
+    const unsubRecurring = onSnapshot(collection(db, rfPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RecurringFine));
+      setRecurringFines(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, rfPath);
+    });
+
+    checkAndExecuteRecurringFines(db, group.id, period.id);
+
     return () => {
       unsubMembers();
       unsubPayments();
@@ -207,6 +222,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       unsubEvents();
       unsubGoals();
       unsubEnvelopes();
+      unsubRecurring();
       unsubPeriod();
     };
   }, [group.id, period.id]);
@@ -405,17 +421,37 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
     });
   }, [members]);
 
+  const nearestRecurringFineEvents = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const active = recurringFines
+      .filter(rf => rf.active && rf.nextDueDate && rf.nextDueDate >= today)
+      .sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+
+    if (active.length === 0) return [];
+
+    // Nearest upcoming automatic fine
+    const nearest = active[0];
+    return [{
+      id: `recurring-${nearest.id}`,
+      name: `⚡ Aut. pokuta: ${nearest.reason} (${nearest.amount} ${getCurrencySymbol(group.currency)})`,
+      date: nearest.nextDueDate,
+      isRecurringFine: true,
+      recurringFine: nearest
+    }];
+  }, [recurringFines, group.currency]);
+
   const allUpcomingEvents = useMemo(() => {
     const now = new Date().toISOString().split('T')[0];
     const combined = [
-      ...events.map(e => ({ ...e, isBirthday: false })),
-      ...birthdayEvents
+      ...events.map(e => ({ ...e, isBirthday: false, isRecurringFine: false })),
+      ...birthdayEvents.map(b => ({ ...b, isRecurringFine: false })),
+      ...nearestRecurringFineEvents
     ];
 
     return combined
       .filter(e => e.date >= now)
       .sort((a, b) => a.date.localeCompare(b.date));
-  }, [events, birthdayEvents]);
+  }, [events, birthdayEvents, nearestRecurringFineEvents]);
 
   const todayEvent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -1940,44 +1976,53 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       </AnimatePresence>
 
       {/* Quick Actions */}
-      {!isReadOnly && (
-        <div className="pt-4">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
-            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Rychlé akce</h3>
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <QuickAction
-              label="Zapsat pokutu"
-              icon={ReceiptText}
-              onClick={() => onOpenQuickAction('fine')}
-              color="hover:border-bento-accent/30 hover:bg-slate-50"
-              iconColor="bg-slate-100 text-bento-text-main"
-            />
-            <QuickAction
-              label="Zapsat platbu"
-              icon={CreditCard}
-              onClick={() => onOpenQuickAction('payment')}
-              color="hover:border-emerald-200 hover:bg-emerald-50/30"
-              iconColor="bg-slate-100 text-bento-text-main"
-            />
-            <QuickAction
-              label="Zapsat výdaj"
-              icon={TrendingDown}
-              onClick={() => onOpenQuickAction('expense')}
-              color="hover:border-rose-200 hover:bg-rose-50/30"
-              iconColor="bg-slate-100 text-bento-text-main"
-            />
-            <QuickAction
-              label="Zapsat příjem"
-              icon={TrendingUp}
-              onClick={() => onOpenQuickAction('income')}
-              color="hover:border-emerald-200 hover:bg-emerald-50/30"
-              iconColor="bg-slate-100 text-bento-text-main"
-            />
-          </div>
+      <div className="pt-4">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
+          <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Rychlé akce a přehledy</h3>
         </div>
-      )}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+          {!isReadOnly && (
+            <>
+              <QuickAction
+                label="Zapsat pokutu"
+                icon={ReceiptText}
+                onClick={() => onOpenQuickAction('fine')}
+                color="hover:border-bento-accent/30 hover:bg-slate-50"
+                iconColor="bg-slate-100 text-bento-text-main"
+              />
+              <QuickAction
+                label="Zapsat platbu"
+                icon={CreditCard}
+                onClick={() => onOpenQuickAction('payment')}
+                color="hover:border-emerald-200 hover:bg-emerald-50/30"
+                iconColor="bg-slate-100 text-bento-text-main"
+              />
+              <QuickAction
+                label="Zapsat výdaj"
+                icon={TrendingDown}
+                onClick={() => onOpenQuickAction('expense')}
+                color="hover:border-rose-200 hover:bg-rose-50/30"
+                iconColor="bg-slate-100 text-bento-text-main"
+              />
+              <QuickAction
+                label="Zapsat příjem"
+                icon={TrendingUp}
+                onClick={() => onOpenQuickAction('income')}
+                color="hover:border-emerald-200 hover:bg-emerald-50/30"
+                iconColor="bg-slate-100 text-bento-text-main"
+              />
+            </>
+          )}
+          <QuickAction
+            label="Export financí"
+            icon={FileSpreadsheet}
+            onClick={() => setIsExportModalOpen(true)}
+            color="hover:border-emerald-300 hover:bg-emerald-50/40"
+            iconColor="bg-emerald-50 text-emerald-600"
+          />
+        </div>
+      </div>
       {/* Category Detail Modal */}
       <AnimatePresence>
         {selectedCategoryTrans && (
@@ -2129,6 +2174,18 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           days.push(<div key={`empty-${i}`} className="h-12" />);
                         }
 
+                        // Get start and end of viewed calendar month
+                        const calYear = calendarDate.getFullYear();
+                        const calMonth = calendarDate.getMonth();
+                        const monthStartStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-01`;
+                        const lastDayNum = new Date(calYear, calMonth + 1, 0).getDate();
+                        const monthEndStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(lastDayNum).padStart(2, '0')}`;
+
+                        const currencySymbol = getCurrencySymbol(group.currency);
+                        const recurringEventsForMonth = recurringFines.flatMap(rf => 
+                          getRecurringFineOccurrencesInRange(rf, monthStartStr, monthEndStr, currencySymbol)
+                        );
+
                         // Get all calendar items for the viewed year/month
                         const calendarItems = [
                           ...events,
@@ -2137,7 +2194,8 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                             const year = calendarDate.getFullYear();
                             const dateInCurrentYear = new Date(year, bDate.getMonth(), bDate.getDate()).toISOString().split('T')[0];
                             return { ...b, date: dateInCurrentYear };
-                          })
+                          }),
+                          ...recurringEventsForMonth
                         ];
 
                         // Real days
@@ -2147,6 +2205,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           const isToday = new Date().toISOString().split('T')[0] === dateStr;
                           const hasImportant = dayEvents.some(e => (e as any).isImportant);
                           const hasBirthday = dayEvents.some(e => (e as any).isBirthday);
+                          const hasRecurring = dayEvents.some(e => (e as any).isRecurringFine);
                           const hasEvent = dayEvents.length > 0;
 
                           days.push(
@@ -2162,7 +2221,8 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                               <div className="flex gap-0.5 mt-1">
                                 {hasImportant && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-rose-500")} />}
                                 {hasBirthday && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-indigo-400")} />}
-                                {hasEvent && !hasImportant && !hasBirthday && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-bento-accent")} />}
+                                {hasRecurring && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-purple-500")} />}
+                                {hasEvent && !hasImportant && !hasBirthday && !hasRecurring && <div className={cn("w-1 h-1 rounded-full", isToday ? "bg-white" : "bg-bento-accent")} />}
                               </div>
 
                               {dayEvents.length > 1 && (
@@ -2187,6 +2247,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                         <span className="text-[10px] font-bold text-bento-text-muted uppercase">Narozeniny</span>
                       </div>
                       <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-purple-500" />
+                        <span className="text-[10px] font-bold text-bento-text-muted uppercase">Aut. pokuta</span>
+                      </div>
+                      <div className="flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full bg-bento-accent" />
                         <span className="text-[10px] font-bold text-bento-text-muted uppercase">Událost</span>
                       </div>
@@ -2194,21 +2258,58 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                   </div>
 
                   {/* Event Detail List for the month */}
-                  <div className="lg:border-l lg:border-bento-card-border lg:pl-8 space-y-6">
-                    <h3 className="text-sm font-black uppercase tracking-widest text-bento-text-main">Události v měsíci</h3>
+                  <div className="lg:border-l lg:border-bento-card-border lg:pl-8 space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-bento-text-main">Události v měsíci</h3>
+                      <select
+                        value={calendarFilter}
+                        onChange={(e) => setCalendarFilter(e.target.value as any)}
+                        className="text-[11px] font-bold bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="all">Všechny události</option>
+                        <option value="ordinary">Pouze obyčejné události</option>
+                        <option value="important">Důležité události</option>
+                        <option value="birthdays">Narozeniny</option>
+                        <option value="recurring">Automatické pokuty</option>
+                      </select>
+                    </div>
+
                     <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                       {(() => {
-                        const monthStr = `${calendarDate.getFullYear()}-${String(calendarDate.getMonth() + 1).padStart(2, '0')}`;
-                        const monthItems = [
+                        const calYear = calendarDate.getFullYear();
+                        const calMonth = calendarDate.getMonth();
+                        const monthStartStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-01`;
+                        const lastDayNum = new Date(calYear, calMonth + 1, 0).getDate();
+                        const monthEndStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(lastDayNum).padStart(2, '0')}`;
+
+                        const currencySymbol = getCurrencySymbol(group.currency);
+                        const recurringEventsForMonth = recurringFines.flatMap(rf => 
+                          getRecurringFineOccurrencesInRange(rf, monthStartStr, monthEndStr, currencySymbol)
+                        );
+
+                        const monthStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}`;
+                        let monthItems = [
                           ...events,
                           ...birthdayEvents.map(b => {
                             const bDate = new Date(b.member.birthDate!);
                             const year = calendarDate.getFullYear();
                             const dateInCurrentYear = new Date(year, bDate.getMonth(), bDate.getDate()).toISOString().split('T')[0];
                             return { ...b, date: dateInCurrentYear };
-                          })
-                        ].filter(e => e.date.startsWith(monthStr))
-                         .sort((a, b) => a.date.localeCompare(b.date));
+                          }),
+                          ...recurringEventsForMonth
+                        ].filter(e => e.date.startsWith(monthStr));
+
+                        if (calendarFilter === 'ordinary') {
+                          monthItems = monthItems.filter(e => !(e as any).isImportant && !(e as any).isBirthday && !(e as any).isRecurringFine);
+                        } else if (calendarFilter === 'important') {
+                          monthItems = monthItems.filter(e => (e as any).isImportant);
+                        } else if (calendarFilter === 'birthdays') {
+                          monthItems = monthItems.filter(e => (e as any).isBirthday);
+                        } else if (calendarFilter === 'recurring') {
+                          monthItems = monthItems.filter(e => (e as any).isRecurringFine);
+                        }
+
+                        monthItems.sort((a, b) => a.date.localeCompare(b.date));
 
                         if (monthItems.length === 0) {
                           return (
@@ -2226,7 +2327,8 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                             className={cn(
                               "p-4 rounded-[1.5rem] border transition-all cursor-pointer group",
                               (item as any).isImportant ? "bg-rose-50/50 border-rose-100 hover:border-rose-300" : 
-                              ((item as any).isBirthday ? "bg-indigo-50/50 border-indigo-100 hover:border-indigo-300" : "bg-slate-50 border-transparent hover:border-bento-card-border")
+                              ((item as any).isBirthday ? "bg-indigo-50/50 border-indigo-100 hover:border-indigo-300" : 
+                              ((item as any).isRecurringFine ? "bg-purple-50/50 border-purple-100 hover:border-purple-300" : "bg-slate-50 border-transparent hover:border-bento-card-border"))
                             )}
                           >
                             <div className="flex items-center justify-between mb-1">
@@ -2239,6 +2341,9 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                                 )}
                                 {(item as any).isBirthday && (
                                   <span className="text-[8px] font-black uppercase tracking-widest text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded">Narozeniny</span>
+                                )}
+                                {(item as any).isRecurringFine && (
+                                  <span className="text-[8px] font-black uppercase tracking-widest text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded">Aut. pokuta</span>
                                 )}
                               </div>
                               <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:translate-x-1 transition-transform" />
@@ -2563,6 +2668,13 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
           </div>
         )}
       </AnimatePresence>
+
+      <ExportFinanceModal
+        group={group}
+        period={period}
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+      />
     </div>
   );
 }
