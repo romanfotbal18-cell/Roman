@@ -15,6 +15,7 @@ export interface GroupEnabledFeatures {
   dashboardEvents?: boolean;
   dashboardStats?: boolean;
   cashboxEnvelopes?: boolean;
+  splitCashboxAccounts?: boolean;
 }
 
 export interface Group {
@@ -131,6 +132,7 @@ export interface Payment {
   periodId: string;
   createdAt: number;
   transactionId?: string; // Link to cashbox
+  fineId?: string; // Link to specific fine
 }
 
 export interface TransactionSubItem {
@@ -143,7 +145,7 @@ export interface Transaction {
   id: string;
   amount: number; // positive for income, negative for expense
   type: 'income' | 'expense';
-  source: 'fine_payment' | 'external_income' | 'expense';
+  source: 'fine_payment' | 'external_income' | 'expense' | 'transfer';
   note: string;
   category?: string;
   periodId: string;
@@ -155,6 +157,9 @@ export interface Transaction {
   isDebtExpense?: boolean;
   cashboxPortion?: number;
   debtDetails?: { memberId: string; amount: number; memberName: string }[];
+  paymentMethod?: 'cash' | 'bank' | 'purchase' | 'transfer';
+  account?: 'cash' | 'bank';
+  transferPairId?: string;
 }
 
 export interface Event {
@@ -185,6 +190,8 @@ export interface Envelope {
   targetAmount?: number;
   color?: string;
   note?: string;
+  type?: 'virtual' | 'cash' | 'bank';
+  targetDate?: string;
   periodId: string;
   createdAt: number;
 }

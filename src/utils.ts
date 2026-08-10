@@ -1,6 +1,6 @@
 import { auth } from './firebase';
 import { collection, query, where, getDocs, doc, updateDoc, writeBatch, Firestore } from 'firebase/firestore';
-import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures } from './types';
+import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures, Payment } from './types';
 
 export function isFeatureEnabled(group: Group | undefined, featureKey: keyof GroupEnabledFeatures): boolean {
   if (!group || !group.enabledFeatures) return true;
@@ -110,27 +110,59 @@ export async function reconcileOverpaymentsForMember(
     const paymentsSnap = await getDocs(
       query(collection(db, `groups/${groupId}/periods/${periodId}/payments`), where('memberId', '==', memberId))
     );
-    const totalPayments = paymentsSnap.docs.reduce((sum, d) => sum + (d.data().amount || 0), 0);
+    const payments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Payment));
 
     const finesSnap = await getDocs(
       query(collection(db, `groups/${groupId}/periods/${periodId}/fines`), where('memberId', '==', memberId))
     );
     const fines = finesSnap.docs
-      .map(d => ({ id: d.id, ...d.data() } as Fine))
-      .sort((a, b) => a.createdAt - b.createdAt);
+      .map(d => ({ id: d.id, ...d.data() } as Fine));
+
+    // Group payments into targeted vs general
+    const fineTargetedMap: Record<string, number> = {};
+    let generalPaymentPool = 0;
+
+    payments.forEach(p => {
+      if (p.fineId) {
+        fineTargetedMap[p.fineId] = (fineTargetedMap[p.fineId] || 0) + (p.amount || 0);
+      } else {
+        generalPaymentPool += (p.amount || 0);
+      }
+    });
+
+    // Prioritize partially paid fines so general payments complete partially paid fines first
+    fines.sort((a, b) => {
+      const targetedA = Math.min(a.amount, fineTargetedMap[a.id] || 0);
+      const targetedB = Math.min(b.amount, fineTargetedMap[b.id] || 0);
+      const isPartialA = targetedA > 0 || ((a.paidAmount || 0) > 0 && !a.paid);
+      const isPartialB = targetedB > 0 || ((b.paidAmount || 0) > 0 && !b.paid);
+
+      if (isPartialA && !isPartialB) return -1;
+      if (!isPartialA && isPartialB) return 1;
+      return a.createdAt - b.createdAt;
+    });
 
     const batch = writeBatch(db);
     let updatedCount = 0;
-    let remainingPayment = totalPayments;
 
     for (const fine of fines) {
-      const allocated = Math.min(fine.amount, Math.max(0, remainingPayment));
-      remainingPayment -= allocated;
-      const isPaid = allocated >= fine.amount;
+      const targeted = fineTargetedMap[fine.id] || 0;
+      const allocatedFromTargeted = Math.min(fine.amount, targeted);
+      const surplusTargeted = Math.max(0, targeted - fine.amount);
 
-      if ((fine.paidAmount || 0) !== allocated || fine.paid !== isPaid) {
+      // Surplus from fine-targeted payments feeds into general payment pool
+      generalPaymentPool += surplusTargeted;
+
+      const needed = fine.amount - allocatedFromTargeted;
+      const allocatedFromGeneral = Math.min(needed, Math.max(0, generalPaymentPool));
+      generalPaymentPool -= allocatedFromGeneral;
+
+      const totalAllocated = allocatedFromTargeted + allocatedFromGeneral;
+      const isPaid = totalAllocated >= fine.amount;
+
+      if ((fine.paidAmount || 0) !== totalAllocated || fine.paid !== isPaid) {
         batch.update(doc(db, `groups/${groupId}/periods/${periodId}/fines`, fine.id), {
-          paidAmount: allocated,
+          paidAmount: totalAllocated,
           paid: isPaid
         });
         updatedCount++;

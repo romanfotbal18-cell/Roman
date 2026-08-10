@@ -32,6 +32,15 @@ export default function DebtList({ group, period }: DebtListProps) {
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
+  // Specific fine payment state
+  const [selectedFineForPayment, setSelectedFineForPayment] = useState<Fine | null>(null);
+  const [finePaymentAmount, setFinePaymentAmount] = useState('');
+  const [finePaymentMethod, setFinePaymentMethod] = useState<'cash' | 'bank' | 'purchase'>('cash');
+  const [finePaymentNote, setFinePaymentNote] = useState('');
+  const [finePaymentDate, setFinePaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [finePurchaseCategory, setFinePurchaseCategory] = useState('Občerstvení');
+  const [finePurchaseRecipient, setFinePurchaseRecipient] = useState('');
+
   const handleCopyText = (text: string, label: string) => {
     if (!text) return;
     navigator.clipboard.writeText(text);
@@ -315,7 +324,9 @@ export default function DebtList({ group, period }: DebtListProps) {
           periodId: period.id,
           createdAt: timestamp,
           fromWho: selectedMember.name,
-          paymentId: paymentRef.id
+          paymentId: paymentRef.id,
+          paymentMethod: 'purchase',
+          account: 'bank'
         });
 
         // 2. Expense transaction for the group purchase
@@ -328,7 +339,9 @@ export default function DebtList({ group, period }: DebtListProps) {
           fromWho: purchaseRecipient.trim() || selectedMember.name,
           periodId: period.id,
           createdAt: timestamp + 1,
-          paymentId: paymentRef.id
+          paymentId: paymentRef.id,
+          paymentMethod: 'purchase',
+          account: 'bank'
         });
       } else {
         const transactionRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
@@ -353,13 +366,21 @@ export default function DebtList({ group, period }: DebtListProps) {
           periodId: period.id,
           createdAt: timestamp,
           fromWho: selectedMember.name,
-          paymentId: paymentRef.id
+          paymentId: paymentRef.id,
+          paymentMethod: paymentMethod,
+          account: paymentMethod === 'bank' ? 'bank' : 'cash'
         });
       }
 
-      // Mark fines as paid if amount covers them fully or partially
+      // Mark fines as paid if amount covers them fully or partially (prioritizing partially paid fines)
       let remainingPayment = amount;
-      const sortedUnpaidFines = [...unpaidFines].sort((a, b) => a.createdAt - b.createdAt);
+      const sortedUnpaidFines = [...unpaidFines].sort((a, b) => {
+        const isPartialA = (a.paidAmount || 0) > 0;
+        const isPartialB = (b.paidAmount || 0) > 0;
+        if (isPartialA && !isPartialB) return -1;
+        if (!isPartialA && isPartialB) return 1;
+        return a.createdAt - b.createdAt;
+      });
 
       for (const fine of sortedUnpaidFines) {
         if (remainingPayment <= 0) break;
@@ -392,6 +413,138 @@ export default function DebtList({ group, period }: DebtListProps) {
       setPaymentMethod('cash');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'payment/transaction');
+    }
+  };
+
+  const openFinePaymentModal = (fine: Fine) => {
+    const remaining = fine.amount - (fine.paidAmount || 0);
+    setSelectedFineForPayment(fine);
+    setFinePaymentAmount(remaining > 0 ? remaining.toString() : '');
+    setFinePaymentDate(new Date().toISOString().split('T')[0]);
+    setFinePaymentMethod('cash');
+    setFinePaymentNote('');
+    setFinePurchaseCategory('Občerstvení');
+    setFinePurchaseRecipient('');
+  };
+
+  const handleFinePayment = async () => {
+    if (!selectedMember || !selectedFineForPayment || !finePaymentAmount) return;
+    const payAmount = parseFloat(finePaymentAmount);
+    if (isNaN(payAmount) || payAmount <= 0) return;
+
+    try {
+      const batch = writeBatch(db);
+      const now = new Date();
+      const selectedDate = new Date(finePaymentDate);
+      selectedDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+      const timestamp = isNaN(selectedDate.getTime()) ? Date.now() : selectedDate.getTime();
+
+      const paymentRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/payments`));
+      const fineRef = doc(db, `groups/${group.id}/periods/${period.id}/fines`, selectedFineForPayment.id);
+
+      const defaultFineNote = `Platba pokuty: ${selectedFineForPayment.reason}`;
+      const userNote = finePaymentNote.trim();
+
+      if (finePaymentMethod === 'purchase') {
+        const incomeTransRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
+        const expenseTransRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
+
+        const displayNote = userNote || finePurchaseRecipient.trim() || finePurchaseCategory;
+
+        batch.set(paymentRef, {
+          memberId: selectedMember.id,
+          amount: payAmount,
+          paymentMethod: 'purchase',
+          note: `Nákup pro tým (${selectedFineForPayment.reason}): ${displayNote}`,
+          periodId: period.id,
+          createdAt: timestamp,
+          transactionId: incomeTransRef.id,
+          fineId: selectedFineForPayment.id
+        });
+
+        // 1. Income transaction (fine repayment)
+        batch.set(incomeTransRef, {
+          amount: payAmount,
+          type: 'income',
+          source: 'fine_payment',
+          category: 'Pokuta',
+          note: `Splacení pokuty "${selectedFineForPayment.reason}" nákupem: ${selectedMember.name}${displayNote ? ` (${displayNote})` : ''}`,
+          periodId: period.id,
+          createdAt: timestamp,
+          fromWho: selectedMember.name,
+          paymentId: paymentRef.id,
+          paymentMethod: 'purchase',
+          account: 'bank'
+        });
+
+        // 2. Expense transaction for the group purchase
+        batch.set(expenseTransRef, {
+          amount: -payAmount,
+          type: 'expense',
+          source: 'expense',
+          category: finePurchaseCategory || 'Nákup pro tým',
+          note: `Nákup pro tým (${selectedFineForPayment.reason}): ${selectedMember.name}${userNote ? ` - ${userNote}` : ''}`,
+          fromWho: finePurchaseRecipient.trim() || selectedMember.name,
+          periodId: period.id,
+          createdAt: timestamp + 1,
+          paymentId: paymentRef.id,
+          paymentMethod: 'purchase',
+          account: 'bank'
+        });
+      } else {
+        const transactionRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
+
+        const fullNote = userNote ? `${defaultFineNote} (${userNote})` : defaultFineNote;
+
+        batch.set(paymentRef, {
+          memberId: selectedMember.id,
+          amount: payAmount,
+          paymentMethod: finePaymentMethod,
+          note: fullNote,
+          periodId: period.id,
+          createdAt: timestamp,
+          transactionId: transactionRef.id,
+          fineId: selectedFineForPayment.id
+        });
+
+        // Transaction
+        batch.set(transactionRef, {
+          amount: payAmount,
+          type: 'income',
+          source: 'fine_payment',
+          category: 'Pokuta',
+          note: `Platba pokuty "${selectedFineForPayment.reason}" od: ${selectedMember.name}${userNote ? ` (${userNote})` : ''}`,
+          periodId: period.id,
+          createdAt: timestamp,
+          fromWho: selectedMember.name,
+          paymentId: paymentRef.id,
+          paymentMethod: finePaymentMethod,
+          account: finePaymentMethod === 'bank' ? 'bank' : 'cash'
+        });
+      }
+
+      // Update specific fine
+      const currentPaid = selectedFineForPayment.paidAmount || 0;
+      const newPaid = currentPaid + payAmount;
+      const isFullyPaid = newPaid >= selectedFineForPayment.amount;
+
+      batch.set(fineRef, {
+        paidAmount: newPaid,
+        paid: isFullyPaid
+      }, { merge: true });
+
+      await batch.commit();
+
+      await reconcileOverpaymentsForMember(db, group.id, period.id, selectedMember.id);
+
+      setSelectedFineForPayment(null);
+      setFinePaymentAmount('');
+      setFinePaymentNote('');
+      setFinePurchaseCategory('Občerstvení');
+      setFinePurchaseRecipient('');
+      setFinePaymentMethod('cash');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'payment/fine');
     }
   };
 
@@ -569,30 +722,45 @@ export default function DebtList({ group, period }: DebtListProps) {
                               </div>
                               
                               {!isReadOnly && (
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
-                                  <button 
+                                <div className="flex items-center gap-1.5 ml-2">
+                                  <button
+                                    type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setEditFineReason(fine.reason);
-                                      setEditFineAmount(fine.amount.toString());
-                                      setEditFineQuantity(fine.quantity || 1);
-                                      setEditFineUnitPrice(fine.unitPrice || fine.amount);
-                                      setEditFineDate(new Date(fine.createdAt).toISOString().split('T')[0]);
-                                      setIsEditingFine(fine);
+                                      openFinePaymentModal(fine);
                                     }}
-                                    className="p-1.5 text-slate-400 hover:text-bento-accent hover:bg-slate-100 rounded-lg transition-all"
+                                    className="w-7 h-7 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-all active:scale-95 shadow-2xs shrink-0 flex items-center justify-center cursor-pointer"
+                                    title="Zapsat platbu pro tuto pokutu"
                                   >
-                                    <Edit2 className="w-3.5 h-3.5" />
+                                    <CreditCard className="w-3.5 h-3.5 text-white" />
                                   </button>
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setIsDeletingFine(fine);
-                                    }}
-                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-all"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  <div className="flex items-center gap-0.5 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditFineReason(fine.reason);
+                                        setEditFineAmount(fine.amount.toString());
+                                        setEditFineQuantity(fine.quantity || 1);
+                                        setEditFineUnitPrice(fine.unitPrice || fine.amount);
+                                        setEditFineDate(new Date(fine.createdAt).toISOString().split('T')[0]);
+                                        setIsEditingFine(fine);
+                                      }}
+                                      className="p-1.5 text-slate-400 hover:text-bento-accent hover:bg-slate-100 rounded-lg transition-all"
+                                      title="Upravit pokutu"
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsDeletingFine(fine);
+                                      }}
+                                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-all"
+                                      title="Smazat pokutu"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -1179,6 +1347,257 @@ export default function DebtList({ group, period }: DebtListProps) {
                   className="bg-rose-600 text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-rose-700 transition-all shadow-lg shadow-rose-500/20"
                 >
                   Ano, smazat
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Pay Specific Fine Modal */}
+      <AnimatePresence>
+        {selectedFineForPayment && selectedMember && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 z-[60]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full shadow-2xl border border-bento-card-border max-h-[90vh] flex flex-col"
+            >
+              {/* Modal Header */}
+              <div className="flex justify-between items-center mb-4 shrink-0">
+                <div>
+                  <h2 className="text-xl font-bold text-bento-text-main tracking-tight">Zapsat platbu pokuty</h2>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Úhrada konkrétní pokuty</p>
+                </div>
+                <button 
+                  onClick={() => setSelectedFineForPayment(null)} 
+                  className="p-2 text-bento-text-muted hover:bg-slate-50 rounded-xl transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Info card describing the fine */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-2xl mb-4 shrink-0 space-y-1">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Vybraná pokuta</p>
+                <p className="text-sm font-extrabold text-slate-800">{selectedFineForPayment.reason}</p>
+                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-200/60 mt-1">
+                  <span className="text-slate-500 font-medium">Člen: <strong>{selectedMember.name}</strong></span>
+                  <span className="text-rose-600 font-black">
+                    Zbývá: {formatCurrency(selectedFineForPayment.amount - (selectedFineForPayment.paidAmount || 0), group.currency)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Scrollable Form Content */}
+              <div className="space-y-4 overflow-y-auto pr-1 flex-1">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Částka k zaplacení</label>
+                  <div className="relative group">
+                    <input
+                      type="number"
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-bold text-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-bento-text-main"
+                      value={finePaymentAmount}
+                      onChange={(e) => setFinePaymentAmount(e.target.value)}
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-slate-400">{getCurrencySymbol(group.currency)}</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1 font-medium">Automaticky předvyplněno na celou zbývající hodnotu pokuty.</p>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Datum platby</label>
+                  <input
+                    type="date"
+                    className="w-full px-3.5 py-2 bg-slate-50 border border-bento-card-border rounded-xl font-bold text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-bento-text-main"
+                    value={finePaymentDate}
+                    onChange={(e) => setFinePaymentDate(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Způsob úhrady</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFinePaymentMethod('cash')}
+                      className={cn(
+                        "flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-bold text-xs transition-all border",
+                        finePaymentMethod === 'cash' 
+                          ? "bg-white border-emerald-500 text-bento-text-main shadow-sm ring-1 ring-emerald-500" 
+                          : "bg-slate-50 border-bento-card-border text-bento-text-muted hover:bg-white"
+                      )}
+                    >
+                      Hotově
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFinePaymentMethod('bank')}
+                      className={cn(
+                        "flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-bold text-xs transition-all border",
+                        finePaymentMethod === 'bank' 
+                          ? "bg-white border-emerald-500 text-bento-text-main shadow-sm ring-1 ring-emerald-500" 
+                          : "bg-slate-50 border-bento-card-border text-bento-text-muted hover:bg-white"
+                      )}
+                    >
+                      Na účet
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFinePaymentMethod('purchase')}
+                      className={cn(
+                        "flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-bold text-xs transition-all border",
+                        finePaymentMethod === 'purchase' 
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-700 shadow-sm ring-1 ring-indigo-500" 
+                          : "bg-slate-50 border-bento-card-border text-bento-text-muted hover:bg-white"
+                      )}
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      Nákup
+                    </button>
+                  </div>
+                </div>
+
+                {finePaymentMethod === 'bank' && group.bankAccount && (
+                  <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-xs text-indigo-950 font-bold">
+                      <div className="flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span>Účet kasy: <strong className="font-mono text-slate-900">{group.bankAccount}</strong></span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(group.bankAccount!, 'fine_modal_account')}
+                        className="p-1 text-indigo-700 hover:text-indigo-900 bg-white rounded-md border border-indigo-200 text-[10px] font-bold flex items-center gap-1 px-2"
+                      >
+                        {copiedText === 'fine_modal_account' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedText === 'fine_modal_account' ? 'Zkopírováno' : 'Kopírovat'}</span>
+                      </button>
+                    </div>
+
+                    {group.bankQrCodeUrl && (
+                      <div className="pt-2 border-t border-indigo-100 flex items-center gap-3 bg-white p-2.5 rounded-lg">
+                        <img src={group.bankQrCodeUrl} alt="QR Platba" className="w-16 h-16 object-contain rounded border" />
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                            <QrCode className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>QR kód pro platbu</span>
+                          </p>
+                          <div className="flex gap-2 mt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyQrImage(group.bankQrCodeUrl!, 'fine_qr_pay')}
+                              className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold flex items-center gap-1"
+                            >
+                              {copiedText === 'fine_qr_pay' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedText === 'fine_qr_pay' ? 'Zkopírováno' : 'Kopírovat'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadQr(group.bankQrCodeUrl!)}
+                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold flex items-center gap-1"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Stáhnout</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {finePaymentMethod === 'purchase' ? (
+                  <>
+                    <div className="p-2.5 bg-indigo-50/70 border border-indigo-100 rounded-xl text-xs text-indigo-900 space-y-0.5">
+                      <p className="font-bold flex items-center gap-1.5 text-indigo-700 text-[11px]">
+                        <ShoppingBag className="w-3.5 h-3.5 shrink-0 text-indigo-600" />
+                        Nákup pro tým (věcné plnění)
+                      </p>
+                      <p className="text-[10px] leading-snug text-slate-600">
+                        Sníží tuto konkrétní pokutu a zároveň zapíše náklad týmu.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Kategorie výdaje</label>
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {['Občerstvení', 'Vybavení', 'Cestovné', 'Akce', 'Ostatní'].map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() => setFinePurchaseCategory(cat)}
+                            className={cn(
+                              "px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all border",
+                              finePurchaseCategory === cat
+                                ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                                : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                            )}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Vlastní kategorie..."
+                        className="w-full px-3 py-2 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-bento-text-main"
+                        value={finePurchaseCategory}
+                        onChange={(e) => setFinePurchaseCategory(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Účel / Obchod</label>
+                      <input
+                        type="text"
+                        placeholder="Komu / Název obchodu..."
+                        className="w-full px-3 py-2 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-bento-text-main"
+                        value={finePurchaseRecipient}
+                        onChange={(e) => setFinePurchaseRecipient(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Popis / Poznámka</label>
+                      <textarea
+                        className="w-full p-2.5 bg-slate-50 border border-bento-card-border rounded-xl h-14 text-xs font-medium resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                        placeholder="Detail nakoupených věcí..."
+                        value={finePaymentNote}
+                        onChange={(e) => setFinePaymentNote(e.target.value)}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1">Poznámka</label>
+                    <textarea
+                      className="w-full p-3 bg-slate-50 border border-bento-card-border rounded-xl h-16 text-xs font-medium resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                      placeholder="Původ nebo účel platby..."
+                      value={finePaymentNote}
+                      onChange={(e) => setFinePaymentNote(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Fixed Footer */}
+              <div className="pt-3 mt-3 border-t border-slate-100 shrink-0 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFineForPayment(null)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-bold text-xs transition-colors"
+                >
+                  Zrušit
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFinePayment}
+                  className="flex-[2] py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-lg shadow-emerald-600/20 text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Potvrdit úhradu pokuty
                 </button>
               </div>
             </motion.div>

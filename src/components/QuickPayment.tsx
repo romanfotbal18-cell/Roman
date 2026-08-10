@@ -103,14 +103,22 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
         periodId: period.id,
         createdAt: timestamp,
         fromWho: selectedMember.name,
-        paymentId: paymentRef.id
+        paymentId: paymentRef.id,
+        paymentMethod: method,
+        account: method === 'bank' ? 'bank' : 'cash'
       });
 
       // 3. Mark fines as paid (greedily)
       let remaining = paymentAmount;
       const unpaidFines = fines
         .filter(f => f.memberId === selectedMember.id && !f.paid)
-        .sort((a, b) => a.createdAt - b.createdAt);
+        .sort((a, b) => {
+          const isPartialA = (a.paidAmount || 0) > 0;
+          const isPartialB = (b.paidAmount || 0) > 0;
+          if (isPartialA && !isPartialB) return -1;
+          if (!isPartialA && isPartialB) return 1;
+          return a.createdAt - b.createdAt;
+        });
 
       const finesPath = `groups/${group.id}/periods/${period.id}/fines`;
       for (const fine of unpaidFines) {

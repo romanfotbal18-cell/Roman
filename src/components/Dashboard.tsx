@@ -1034,14 +1034,14 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                   )}
                 </div>
                 <span className="text-[10px] font-medium text-slate-500">
-                  Volná hotovost: <strong className="text-slate-800 font-mono font-black">{formatCurrency(freeCash, group.currency)}</strong>
+                  Hotovost: <strong className="text-slate-800 font-mono font-black">{formatCurrency(freeCash, group.currency)}</strong>
                 </span>
               </div>
 
               {hasDeficit && (
                 <div className="p-2 bg-amber-50/80 border border-amber-200/80 rounded-xl text-[10px] font-semibold text-amber-800 flex items-center gap-1.5">
                   <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>Volná hotovost je na 0 Kč. Pokles zůstatku pokladny ({formatCurrency(deficitAmount, group.currency)}) je čerpán z úspor v obálkách.</span>
+                  <span>Hotovost je na 0 Kč. Pokles zůstatku pokladny ({formatCurrency(deficitAmount, group.currency)}) je čerpán z úspor v obálkách.</span>
                 </div>
               )}
 
@@ -1338,12 +1338,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                               contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px -5px rgb(0 0 0 / 0.1)' }}
                               formatter={(value: any, name: any) => [
                                 formatCurrency(value, group.currency), 
-                                name === 'freeCash' ? 'Volná hotovost (mimo obálky)' : 'Celkový zůstatek'
+                                name === 'freeCash' ? 'Hotovost (mimo obálky)' : 'Celkový zůstatek'
                               ]}
                             />
                             <Legend 
                               wrapperStyle={{ paddingTop: '10px', fontSize: '11px', fontWeight: 700 }}
-                              formatter={(value: string) => value === 'freeCash' ? 'Volná hotovost (mimo obálky)' : 'Celkový zůstatek'}
+                              formatter={(value: string) => value === 'freeCash' ? 'Hotovost (mimo obálky)' : 'Celkový zůstatek'}
                             />
                             <Area type="monotone" dataKey="balance" name="balance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorBalance)" />
                             <Area type="monotone" dataKey="freeCash" name="freeCash" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="4 4" fillOpacity={1} fill="url(#colorFreeCash)" />
@@ -1360,7 +1360,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           <p className="text-base font-black text-blue-600">{formatCurrency(stats.balance, group.currency)}</p>
                         </div>
                         <div className="p-3.5 bg-purple-50/50 border border-purple-100 rounded-2xl">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-purple-600 block mb-0.5">Volná hotovost</span>
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-purple-600 block mb-0.5">Hotovost</span>
                           <p className="text-base font-black text-purple-700">{formatCurrency(freeCash, group.currency)}</p>
                           <span className="text-[9px] text-purple-500 font-medium block mt-0.5">
                             {hasDeficit 

@@ -2291,6 +2291,46 @@ export default function Settings({ group, period }: SettingsProps) {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+              {/* Split Cashbox Accounts */}
+              <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg shrink-0">
+                    <Building2 className="w-4 h-4" />
+                  </div>
+                  <div className="flex items-center gap-1 min-w-0">
+                    <h4 className="font-extrabold text-xs text-slate-800 truncate">Rozdělení kasy (Hotovost / Účet)</h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveHelpModal({
+                        title: 'Rozdělení pokladny na hotovost a účet',
+                        description: 'Umožňuje sledovat zůstatek zvlášť v hotovosti a na bankovním účtu, rozlišovat příjmy a výdaje podle způsobu platby a přelívat peníze mezi hotovostí a účtem. Při vypnutí vedete všechny peníze dohromady v jedné částce.',
+                        example: 'Při zápisu příjmu volba "Hotovost" nebo "Na účet". Převod peněz z hotovosti do banky.'
+                      })}
+                      className="p-1 text-slate-400 hover:text-blue-600 focus:text-blue-600 focus:outline-none transition-colors rounded-full hover:bg-slate-100 shrink-0"
+                      title="Nápověda k rozdělení pokladny"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => handleToggleFeature('splitCashboxAccounts')}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    isFeatureEnabled(group, 'splitCashboxAccounts') ? "bg-indigo-600" : "bg-slate-200"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      isFeatureEnabled(group, 'splitCashboxAccounts') ? "translate-x-4" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
               {/* Cashbox Envelopes */}
               <div className="bg-white border border-bento-card-border rounded-xl p-3 shadow-2xs hover:border-slate-300 transition-all flex items-center justify-between gap-2.5">
                 <div className="flex items-center gap-2 min-w-0">

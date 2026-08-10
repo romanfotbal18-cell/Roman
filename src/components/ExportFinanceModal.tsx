@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Group, Period, Member, Fine, Transaction, Payment, Goal, Envelope } from '../types';
+import { Group, Period, Member, Fine, Transaction, Payment, Goal, Envelope, MemberGroup } from '../types';
 import { formatCurrency, getCurrencySymbol, formatDate, cn } from '../utils';
-import { X, FileSpreadsheet, Download, Loader2, Calendar, Target, Folder, Award, Users, ReceiptText, Wallet, Check, Copy, Flame, PieChart, Sparkles, AlertTriangle } from 'lucide-react';
+import { X, FileSpreadsheet, Download, Loader2, Calendar, Target, Folder, Award, Users, ReceiptText, Wallet, Check, Copy, Flame, PieChart, Sparkles, AlertTriangle, UserCheck, UserX, Search, CheckSquare, Square, Filter } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
+
+export type MemberFilterType = 'all' | 'active' | 'inactive' | 'debt' | 'overpaid' | 'settled' | 'groups' | 'custom';
 
 interface ExportFinanceModalProps {
   group: Group;
@@ -16,6 +18,7 @@ interface ExportFinanceModalProps {
 
 export default function ExportFinanceModal({ group, period, isOpen, onClose }: ExportFinanceModalProps) {
   const [members, setMembers] = useState<Member[]>([]);
+  const [memberGroups, setMemberGroups] = useState<MemberGroup[]>([]);
   const [fines, setFines] = useState<Fine[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -29,6 +32,12 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   
+  // Member & Group Filters
+  const [memberFilterType, setMemberFilterType] = useState<MemberFilterType>('all');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [selectedCustomMemberIds, setSelectedCustomMemberIds] = useState<string[]>([]);
+  const [memberSearchTerm, setMemberSearchTerm] = useState<string>('');
+
   // Data selection
   const [includeFines, setIncludeFines] = useState(true);
   const [includeTransactions, setIncludeTransactions] = useState(true);
@@ -42,12 +51,19 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
     setLoading(true);
 
-    // Load Members strictly for this period & group (only active, non-deleted)
+    // Load ALL Members strictly for this period & group (including inactive ones, excluding deleted)
     const membersPath = `groups/${group.id}/periods/${period.id}/members`;
     const unsubMembers = onSnapshot(collection(db, membersPath), (snap) => {
-      const activeMembers = (snap.docs.map(d => ({ id: d.id, ...d.data() })) as Member[])
-        .filter(m => m.active !== false && !(m as any).isDeleted && !(m as any).deleted);
-      setMembers(activeMembers);
+      const allMembers = (snap.docs.map(d => ({ id: d.id, ...d.data() })) as Member[])
+        .filter(m => !(m as any).isDeleted && !(m as any).deleted);
+      setMembers(allMembers);
+    });
+
+    // Load Member Groups for this period & group
+    const groupsPath = `groups/${group.id}/periods/${period.id}/memberGroups`;
+    const unsubGroups = onSnapshot(collection(db, groupsPath), (snap) => {
+      const groupsList = snap.docs.map(d => ({ id: d.id, ...d.data() })) as MemberGroup[];
+      setMemberGroups(groupsList);
     });
 
     // Load Fines strictly for this period (excluding deleted)
@@ -93,6 +109,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
     return () => {
       unsubMembers();
+      unsubGroups();
       unsubFines();
       unsubTx();
       unsubPay();
@@ -103,11 +120,6 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
   if (!isOpen) return null;
 
-  // Filtered dataset according to optional date filters and active members
-  const memberMap = new Map<string, string>();
-  members.forEach(m => memberMap.set(m.id, m.name));
-  const activeMemberIds = new Set(members.map(m => m.id));
-
   const filterByDate = (createdAt: number) => {
     if (!startDate && !endDate) return true;
     const itemDateStr = new Date(createdAt).toISOString().split('T')[0];
@@ -116,31 +128,29 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     return true;
   };
 
-  const filteredFines = fines
-    .filter(f => activeMemberIds.has(f.memberId) && filterByDate(f.createdAt))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  // Map of all members
+  const memberMap = new Map<string, Member>();
+  members.forEach(m => memberMap.set(m.id, m));
 
-  const filteredTransactions = transactions
-    .filter(t => filterByDate(t.createdAt))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  // Compute overall balances for ALL members
+  const allMemberBalancesMap = new Map<string, {
+    totalFines: number;
+    totalPaid: number;
+    unpaidDebt: number;
+    overpayment: number;
+    isSettled: boolean;
+    status: string;
+  }>();
 
-  const filteredPayments = payments
-    .filter(p => activeMemberIds.has(p.memberId) && filterByDate(p.createdAt))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-  const sortedGoals = [...goals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  const sortedEnvelopes = [...envelopes].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-  // Compute Member Balances with Explicit Overpayments based strictly on total fines vs total payments (matching DebtList)
-  const memberBalances = members.map(m => {
-    const mFines = filteredFines.filter(f => f.memberId === m.id);
-    const mPayments = filteredPayments.filter(p => p.memberId === m.id);
+  members.forEach(m => {
+    const mFines = fines.filter(f => f.memberId === m.id && filterByDate(f.createdAt));
+    const mPayments = payments.filter(p => p.memberId === m.id && filterByDate(p.createdAt));
 
     const totalFines = mFines.reduce((acc, f) => acc + (f.amount || 0), 0);
-    const totalPayments = mPayments.reduce((acc, p) => acc + (p.amount || 0), 0);
-
-    const unpaidDebt = Math.max(0, totalFines - totalPayments);
-    const overpayment = Math.max(0, totalPayments - totalFines);
+    const totalPaid = mPayments.reduce((acc, p) => acc + (p.amount || 0), 0);
+    const unpaidDebt = Math.max(0, totalFines - totalPaid);
+    const overpayment = Math.max(0, totalPaid - totalFines);
+    const isSettled = unpaidDebt === 0 && overpayment === 0;
 
     let status = 'Vyrovnáno';
     if (unpaidDebt > 0) {
@@ -149,30 +159,107 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
       status = `Přeplatek: +${formatCurrency(overpayment, group.currency)}`;
     }
 
+    allMemberBalancesMap.set(m.id, {
+      totalFines,
+      totalPaid,
+      unpaidDebt,
+      overpayment,
+      isSettled,
+      status
+    });
+  });
+
+  // Filter members according to memberFilterType
+  const filteredMembers = members.filter(m => {
+    const bal = allMemberBalancesMap.get(m.id);
+    const isActive = m.active !== false;
+
+    switch (memberFilterType) {
+      case 'active':
+        return isActive;
+      case 'inactive':
+        return !isActive;
+      case 'debt':
+        return (bal?.unpaidDebt || 0) > 0;
+      case 'overpaid':
+        return (bal?.overpayment || 0) > 0;
+      case 'settled':
+        return bal?.isSettled === true;
+      case 'groups': {
+        if (selectedGroupIds.length === 0) return true;
+        const memberIdsInGroups = new Set(
+          memberGroups
+            .filter(mg => selectedGroupIds.includes(mg.id))
+            .flatMap(mg => mg.memberIds || [])
+        );
+        return memberIdsInGroups.has(m.id);
+      }
+      case 'custom': {
+        if (selectedCustomMemberIds.length === 0) return true;
+        return selectedCustomMemberIds.includes(m.id);
+      }
+      case 'all':
+      default:
+        return true;
+    }
+  });
+
+  const activeCountInFiltered = filteredMembers.filter(m => m.active !== false).length;
+  const inactiveCountInFiltered = filteredMembers.filter(m => m.active === false).length;
+
+  const selectedMemberIds = new Set(filteredMembers.map(m => m.id));
+
+  // Compute memberBalances for chosen members
+  const memberBalances = filteredMembers.map(m => {
+    const b = allMemberBalancesMap.get(m.id) || {
+      totalFines: 0,
+      totalPaid: 0,
+      unpaidDebt: 0,
+      overpayment: 0,
+      isSettled: true,
+      status: 'Vyrovnáno'
+    };
     return {
       id: m.id,
       name: m.name,
-      totalFines,
-      totalPaid: totalPayments,
-      unpaidDebt,
-      overpayment,
-      status
+      active: m.active !== false,
+      totalFines: b.totalFines,
+      totalPaid: b.totalPaid,
+      unpaidDebt: b.unpaidDebt,
+      overpayment: b.overpayment,
+      status: b.status
     };
   }).sort((a, b) => b.unpaidDebt - a.unpaidDebt || b.overpayment - a.overpayment);
 
-  // Financial summary metrics
-  const totalFinesAmount = filteredFines.reduce((sum, f) => sum + f.amount, 0);
-  const totalFinesPaid = filteredFines.reduce((sum, f) => sum + (f.paidAmount || (f.paid ? f.amount : 0)), 0);
-  const totalUnpaidFines = memberBalances.reduce((sum, m) => sum + m.unpaidDebt, 0);
-  const totalOverpayments = memberBalances.reduce((sum, m) => sum + m.overpayment, 0);
+  const filteredFines = fines
+    .filter(f => selectedMemberIds.has(f.memberId) && filterByDate(f.createdAt))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const filteredTransactions = transactions
+    .filter(t => filterByDate(t.createdAt))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const filteredPayments = payments
+    .filter(p => selectedMemberIds.has(p.memberId) && filterByDate(p.createdAt))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const sortedGoals = [...goals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const sortedEnvelopes = [...envelopes].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  // Financial summary metrics (Overall cashbox metrics for the selected period & date range)
+  const allDateFines = fines.filter(f => filterByDate(f.createdAt));
+  const totalFinesAmount = allDateFines.reduce((sum, f) => sum + (f.amount || 0), 0);
+  const totalFinesPaid = allDateFines.reduce((sum, f) => sum + (f.paidAmount || (f.paid ? f.amount : 0)), 0);
+  const totalUnpaidFines = Array.from(allMemberBalancesMap.values()).reduce((sum, m) => sum + m.unpaidDebt, 0);
+  const totalOverpayments = Array.from(allMemberBalancesMap.values()).reduce((sum, m) => sum + m.overpayment, 0);
 
   const totalIncome = filteredTransactions
     .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + (t.amount || 0), 0);
 
   const totalExpense = filteredTransactions
     .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
 
   const cashboxBalance = totalIncome - totalExpense;
 
@@ -186,8 +273,14 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     return { name: m.name, total: totalPaymentsMade };
   }).filter(s => s.total > 0).sort((a, b) => b.total - a.total).slice(0, 5);
 
-  // 2. Největší dlužníci za celé období
-  const topDebtorsList = memberBalances
+  // 2. Největší dlužníci za celé období (pro celou pokladnu)
+  const topDebtorsList = Array.from(allMemberBalancesMap.entries())
+    .map(([id, bal]) => ({
+      id,
+      name: memberMap.get(id)?.name || 'Neznámý',
+      unpaidDebt: bal.unpaidDebt,
+      overpayment: bal.overpayment
+    }))
     .filter(m => m.unpaidDebt > 0)
     .sort((a, b) => b.unpaidDebt - a.unpaidDebt)
     .slice(0, 5);
@@ -233,15 +326,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     XLSX.utils.book_append_sheet(workbook, wsSummary, 'Souhrn financí');
 
     // Sheet 2: Cíle a obálky
-    if (includeGoalsAndEnvelopes && (goals.length > 0 || envelopes.length > 0)) {
-      const goalsData = goals.map(g => ({
+    if (includeGoalsAndEnvelopes && (sortedGoals.length > 0 || sortedEnvelopes.length > 0)) {
+      const goalsData = sortedGoals.map(g => ({
         'Druh': 'Finanční cíl',
         'Název': g.name,
         [`Cílová částka (${currSymbol})`]: g.targetAmount,
         'Priorita': g.priority,
         'Stav': g.completed ? 'Splněno' : 'Probíhá'
       }));
-      const envData = envelopes.map(e => ({
+      const envData = sortedEnvelopes.map(e => ({
         'Druh': 'Obálka pokladny',
         'Název': e.name,
         [`Aktuální zůstatek (${currSymbol})`]: e.amount,
@@ -252,10 +345,11 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
       XLSX.utils.book_append_sheet(workbook, wsGoals, 'Cíle a obálky');
     }
 
-    // Sheet 3: Bilance členů (with overpayments)
+    // Sheet 3: Bilance členů (with overpayments and active status)
     if (includeMemberBalances && memberBalances.length > 0) {
       const balData = memberBalances.map(m => ({
         'Člen': m.name,
+        'Aktivita člena': m.active ? 'Aktivní' : 'Neaktivní',
         [`Celkem pokut (${currSymbol})`]: m.totalFines,
         [`Celkem zaplaceno (${currSymbol})`]: m.totalPaid,
         [`Aktuální dluh (${currSymbol})`]: m.unpaidDebt,
@@ -270,9 +364,11 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     if (includeFines && filteredFines.length > 0) {
       const finesData = filteredFines.map(f => {
         const remaining = f.amount - (f.paidAmount || (f.paid ? f.amount : 0));
+        const m = memberMap.get(f.memberId);
         return {
           'Datum': formatDate(f.createdAt),
-          'Člen': memberMap.get(f.memberId) || 'Neznámý',
+          'Člen': m?.name || 'Neznámý',
+          'Aktivita člena': m?.active !== false ? 'Aktivní' : 'Neaktivní',
           'Prohřešek / Důvod': f.reason,
           [`Částka (${currSymbol})`]: f.amount,
           [`Zaplaceno (${currSymbol})`]: f.paidAmount || (f.paid ? f.amount : 0),
@@ -301,13 +397,17 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
     // Sheet 6: Platby
     if (includePayments && filteredPayments.length > 0) {
-      const payData = filteredPayments.map(p => ({
-        'Datum': formatDate(p.createdAt),
-        'Člen': memberMap.get(p.memberId) || 'Neznámý',
-        [`Částka (${currSymbol})`]: p.amount,
-        'Způsob úhrady': p.paymentMethod === 'cash' ? 'Hotovost' : p.paymentMethod === 'bank' ? 'Bankovní převod' : 'Proplacený nákup',
-        'Poznámka': p.note || '-'
-      }));
+      const payData = filteredPayments.map(p => {
+        const m = memberMap.get(p.memberId);
+        return {
+          'Datum': formatDate(p.createdAt),
+          'Člen': m?.name || 'Neznámý',
+          'Aktivita člena': m?.active !== false ? 'Aktivní' : 'Neaktivní',
+          [`Částka (${currSymbol})`]: p.amount,
+          'Způsob úhrady': p.paymentMethod === 'cash' ? 'Hotovost' : p.paymentMethod === 'bank' ? 'Bankovní převod' : 'Proplacený nákup',
+          'Poznámka': p.note || '-'
+        };
+      });
       const wsPay = XLSX.utils.json_to_sheet(payData);
       XLSX.utils.book_append_sheet(workbook, wsPay, 'Připsané platby');
     }
@@ -357,7 +457,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
       csvContent += `Datum;Člen;Důvod pokuty;Částka (${currSymbol});Zaplaceno (${currSymbol});Stav;Typ\n`;
       filteredFines.forEach(f => {
         const status = f.paid ? 'Zaplaceno' : (f.paidAmount && f.paidAmount > 0) ? 'Částečně' : 'Nezaplaceno';
-        csvContent += `"${formatDate(f.createdAt)}";"${memberMap.get(f.memberId) || ''}";"${f.reason.replace(/"/g, '""')}";"${f.amount}";"${f.paidAmount || (f.paid ? f.amount : 0)}";"${status}";"${f.recurringFineId ? 'Automatická' : 'Ruční'}"\n`;
+        csvContent += `"${formatDate(f.createdAt)}";"${memberMap.get(f.memberId)?.name || ''}";"${f.reason.replace(/"/g, '""')}";"${f.amount}";"${f.paidAmount || (f.paid ? f.amount : 0)}";"${status}";"${f.recurringFineId ? 'Automatická' : 'Ruční'}"\n`;
       });
       csvContent += `\n`;
     }
@@ -402,10 +502,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
         html2canvas: {
           scale: 2,
           useCORS: true,
-          logging: false
+          logging: false,
+          scrollY: 0
         },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['css', 'legacy'] }
+        pagebreak: {
+          mode: ['css', 'legacy'],
+          before: ['.pdf-page-break-before'],
+          avoid: ['h1', 'h2', 'h3', 'h4', '.pdf-header-container', '.pdf-heading', '.pdf-no-break', 'tr', 'thead', '.pdf-card', '.pdf-section-title']
+        }
       };
 
       // @ts-ignore
@@ -422,11 +527,47 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
       {/* Hidden Offscreen PDF Container (pure hex colors, 680px width for standard A4 10mm margins) */}
       <div style={{ position: 'fixed', left: '-9999px', top: '-9999px', width: '680px', backgroundColor: '#ffffff', opacity: 1, zIndex: -1000, pointerEvents: 'none' }}>
         <div id="pdf-report-content" style={{ fontFamily: 'Arial, sans-serif', color: '#0f172a', backgroundColor: '#ffffff', padding: '20px', boxSizing: 'border-box', width: '680px', maxWidth: '680px', margin: '0 auto' }}>
+          <style>{`
+            #pdf-report-content h1,
+            #pdf-report-content h2,
+            #pdf-report-content h3,
+            #pdf-report-content h4 {
+              line-height: 1.3 !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              page-break-after: avoid !important;
+              break-after: avoid !important;
+              -webkit-column-break-inside: avoid !important;
+            }
+            #pdf-report-content .pdf-header-container,
+            #pdf-report-content .pdf-heading,
+            #pdf-report-content .pdf-no-break,
+            #pdf-report-content .pdf-section-title {
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              page-break-after: avoid !important;
+              break-after: avoid !important;
+              page-break-before: auto !important;
+              break-before: auto !important;
+              -webkit-column-break-inside: avoid !important;
+            }
+            #pdf-report-content tr,
+            #pdf-report-content thead,
+            #pdf-report-content .pdf-card {
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              -webkit-column-break-inside: avoid !important;
+            }
+            #pdf-report-content .pdf-page-break-before {
+              page-break-before: always !important;
+              break-before: page !important;
+            }
+          `}</style>
           {/* Page 1: Title & Overview */}
-          <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '24px', boxSizing: 'border-box', width: '100%' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #0f172a', paddingBottom: '12px', marginBottom: '20px' }}>
+          <div className="pdf-section" style={{ paddingBottom: '24px', boxSizing: 'border-box', width: '100%' }}>
+            <div className="pdf-header-container pdf-no-break" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #0f172a', paddingBottom: '12px', marginBottom: '20px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
               <div style={{ width: '65%' }}>
-                <h1 style={{ fontSize: '20px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '-0.025em', margin: 0, color: '#0f172a', wordBreak: 'break-word' }}>{group.name}</h1>
+                <h1 className="pdf-heading" style={{ fontSize: '20px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '-0.025em', margin: 0, color: '#0f172a', wordBreak: 'break-word', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>{group.name}</h1>
                 <p style={{ fontSize: '12px', fontWeight: 700, color: '#334155', margin: '3px 0 0 0' }}>Oficiální finanční výkaz a zpráva o pokutách</p>
                 <p style={{ fontSize: '11px', fontWeight: 600, color: '#4338ca', margin: '3px 0 0 0' }}>Období: {period.name}</p>
                 <p style={{ fontSize: '10px', color: '#64748b', margin: '2px 0 0 0' }}>Časové rozmezí: {dateRangeLabel}</p>
@@ -437,9 +578,9 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
               </div>
             </div>
 
-            <div style={{ marginTop: '12px' }}>
-              <h2 style={{ fontSize: '14px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#1e293b', borderBottom: '1px solid #e2e8f0', paddingBottom: '6px', marginBottom: '12px' }}>Souhrnný přehled hospodaření</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', padding: '12px', backgroundColor: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0', boxSizing: 'border-box', width: '100%' }}>
+            <div className="pdf-no-break" style={{ marginTop: '12px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+              <h2 className="pdf-heading" style={{ fontSize: '14px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#1e293b', borderBottom: '1px solid #e2e8f0', paddingBottom: '6px', marginBottom: '12px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Souhrnný přehled hospodaření</h2>
+              <div className="pdf-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', padding: '12px', backgroundColor: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0', boxSizing: 'border-box', width: '100%', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                 <div style={{ padding: '10px', backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #e2e8f0', boxSizing: 'border-box' }}>
                   <p style={{ fontSize: '9px', textTransform: 'uppercase', fontWeight: 700, color: '#64748b', margin: 0 }}>Celková suma pokut</p>
                   <p style={{ fontSize: '15px', fontWeight: 900, color: '#0f172a', margin: '3px 0 0 0' }}>{formatCurrency(totalFinesAmount, group.currency)}</p>
@@ -466,7 +607,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </div>
               </div>
 
-              <div style={{ marginTop: '14px', padding: '14px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-card" style={{ marginTop: '14px', padding: '14px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box', width: '100%', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                 <div>
                   <p style={{ fontSize: '10px', fontWeight: 700, color: '#312e81', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>Aktuální čistý zůstatek v pokladně</p>
                   <p style={{ fontSize: '20px', fontWeight: 900, color: '#4338ca', margin: '3px 0 0 0' }}>{formatCurrency(cashboxBalance, group.currency)}</p>
@@ -483,21 +624,21 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
           </div>
 
           {/* Page 2: Goals & Envelopes */}
-          {includeGoalsAndEnvelopes && (goals.length > 0 || envelopes.length > 0) && (
-            <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Finanční cíle a obálky kasy</h2>
+          {includeGoalsAndEnvelopes && (sortedGoals.length > 0 || sortedEnvelopes.length > 0) && (
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Finanční cíle a obálky kasy</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Plány a rozdělení prostředků v období {period.name}</p>
               </div>
 
-              {goals.length > 0 && (
+              {sortedGoals.length > 0 && (
                 <div style={{ marginBottom: '28px' }}>
-                  <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: '#1e293b', borderBottom: '1px solid #cbd5e1', paddingBottom: '4px', marginBottom: '12px' }}>
-                    Finanční cíle ({goals.length})
+                  <h3 className="pdf-heading pdf-no-break" style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: '#1e293b', borderBottom: '1px solid #cbd5e1', paddingBottom: '4px', marginBottom: '12px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                    Finanční cíle ({sortedGoals.length})
                   </h3>
                   <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                     <thead>
-                      <tr style={{ borderBottom: '2px solid #cbd5e1', fontWeight: 700, color: '#334155' }}>
+                      <tr style={{ borderBottom: '2px solid #cbd5e1', fontWeight: 700, color: '#334155', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                         <th style={{ padding: '8px 4px', width: '25%' }}>Název cíle</th>
                         <th style={{ padding: '8px 4px', width: '15%', textAlign: 'right' }}>Cílová částka</th>
                         <th style={{ padding: '8px 4px', width: '25%', textAlign: 'right' }}>Splněno (aktuálně)</th>
@@ -506,7 +647,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                       </tr>
                     </thead>
                     <tbody>
-                      {goals.map(g => {
+                      {sortedGoals.map(g => {
                         const totalEnvelopesAllocated = envelopes.reduce((acc, env) => acc + (env.amount || 0), 0);
                         const availableCashOutsideEnvelopes = Math.max(0, cashboxBalance - totalEnvelopesAllocated);
                         const isTotalCashbox = g.goalCalcSource === 'total_cashbox';
@@ -517,7 +658,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                         const pct = Math.min(100, Math.round((clampedSaved / g.targetAmount) * 100));
 
                         return (
-                          <tr key={g.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                          <tr key={g.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                             <td style={{ padding: '8px 4px', fontWeight: 700 }}>{g.name}</td>
                             <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(g.targetAmount, group.currency)}</td>
                             <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 800, color: g.completed ? '#047857' : '#4f46e5' }}>
@@ -537,14 +678,14 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </div>
               )}
 
-              {envelopes.length > 0 && (
+              {sortedEnvelopes.length > 0 && (
                 <div>
-                  <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: '#1e293b', borderBottom: '1px solid #cbd5e1', paddingBottom: '4px', marginBottom: '12px' }}>
-                    Rozdělení obálek kasy ({envelopes.length})
+                  <h3 className="pdf-heading pdf-no-break" style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: '#1e293b', borderBottom: '1px solid #cbd5e1', paddingBottom: '4px', marginBottom: '12px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                    Rozdělení obálek kasy ({sortedEnvelopes.length})
                   </h3>
                   <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                     <thead>
-                      <tr style={{ borderBottom: '2px solid #cbd5e1', fontWeight: 700, color: '#334155' }}>
+                      <tr style={{ borderBottom: '2px solid #cbd5e1', fontWeight: 700, color: '#334155', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                         <th style={{ padding: '8px 4px', width: '30%' }}>Název obálky</th>
                         <th style={{ padding: '8px 4px', width: '20%', textAlign: 'right' }}>Vyhrazená částka</th>
                         <th style={{ padding: '8px 4px', width: '20%', textAlign: 'right' }}>Cílová částka</th>
@@ -552,8 +693,8 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                       </tr>
                     </thead>
                     <tbody>
-                      {envelopes.map(e => (
-                        <tr key={e.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      {sortedEnvelopes.map(e => (
+                        <tr key={e.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                           <td style={{ padding: '8px 4px', fontWeight: 700 }}>{e.name}</td>
                           <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 900, color: '#047857' }}>{formatCurrency(e.amount, group.currency)}</td>
                           <td style={{ padding: '8px 4px', textAlign: 'right' }}>{e.targetAmount ? formatCurrency(e.targetAmount, group.currency) : '-'}</td>
@@ -569,27 +710,31 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
           {/* Page 3: Member Balances */}
           {includeMemberBalances && (
-            <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Bilance a stav členů</h2>
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Bilance a stav členů ({memberBalances.length})</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Kompletní přehled zaplacených pokut, dluhů a přeplatků</p>
               </div>
 
               <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                 <thead>
-                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b' }}>
-                    <th style={{ padding: '8px 4px', width: '24%' }}>Člen týmu</th>
-                    <th style={{ padding: '8px 4px', width: '15%', textAlign: 'right' }}>Suma pokut</th>
-                    <th style={{ padding: '8px 4px', width: '15%', textAlign: 'right' }}>Celkem uhradil</th>
-                    <th style={{ padding: '8px 4px', width: '16%', textAlign: 'right' }}>Aktuální dluh</th>
-                    <th style={{ padding: '8px 4px', width: '16%', textAlign: 'right' }}>Přeplatek</th>
-                    <th style={{ padding: '8px 4px', width: '14%', textAlign: 'center' }}>Stav</th>
+                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                    <th style={{ padding: '8px 4px', width: '22%' }}>Člen týmu</th>
+                    <th style={{ padding: '8px 4px', width: '12%', textAlign: 'center' }}>Aktivita</th>
+                    <th style={{ padding: '8px 4px', width: '14%', textAlign: 'right' }}>Suma pokut</th>
+                    <th style={{ padding: '8px 4px', width: '14%', textAlign: 'right' }}>Celkem uhradil</th>
+                    <th style={{ padding: '8px 4px', width: '14%', textAlign: 'right' }}>Aktuální dluh</th>
+                    <th style={{ padding: '8px 4px', width: '14%', textAlign: 'right' }}>Přeplatek</th>
+                    <th style={{ padding: '8px 4px', width: '10%', textAlign: 'center' }}>Stav</th>
                   </tr>
                 </thead>
                 <tbody>
                   {memberBalances.map(m => (
-                    <tr key={m.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                    <tr key={m.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                       <td style={{ padding: '8px 4px', fontWeight: 700, color: '#0f172a' }}>{m.name}</td>
+                      <td style={{ padding: '8px 4px', textAlign: 'center', fontSize: '10px', fontWeight: 600, color: m.active ? '#047857' : '#94a3b8' }}>
+                        {m.active ? 'Aktivní' : 'Neaktivní'}
+                      </td>
                       <td style={{ padding: '8px 4px', textAlign: 'right' }}>{formatCurrency(m.totalFines, group.currency)}</td>
                       <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(m.totalPaid, group.currency)}</td>
                       <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 900, color: '#e11d48' }}>
@@ -616,15 +761,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
           {/* Page 4: Fines History */}
           {includeFines && (
-            <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Historie pokut ({filteredFines.length})</h2>
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Historie pokut ({filteredFines.length})</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Detailní přehled předepsaných pokut v období</p>
               </div>
 
               <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                 <thead>
-                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b' }}>
+                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                     <th style={{ padding: '8px 4px', width: '13%' }}>Datum</th>
                     <th style={{ padding: '8px 4px', width: '20%' }}>Člen</th>
                     <th style={{ padding: '8px 4px', width: '31%' }}>Prohřešek / Důvod</th>
@@ -637,9 +782,9 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                   {filteredFines.map(f => {
                     const paidVal = f.paidAmount || (f.paid ? f.amount : 0);
                     return (
-                      <tr key={f.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <tr key={f.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                         <td style={{ padding: '8px 4px' }}>{formatDate(f.createdAt)}</td>
-                        <td style={{ padding: '8px 4px', fontWeight: 700 }}>{memberMap.get(f.memberId) || 'Neznámý'}</td>
+                        <td style={{ padding: '8px 4px', fontWeight: 700 }}>{memberMap.get(f.memberId)?.name || 'Neznámý'}</td>
                         <td style={{ padding: '8px 4px', wordBreak: 'break-word' }}>{f.reason}</td>
                         <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(f.amount, group.currency)}</td>
                         <td style={{ padding: '8px 4px', textAlign: 'right' }}>{formatCurrency(paidVal, group.currency)}</td>
@@ -662,15 +807,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
           {/* Page 5: Transactions History */}
           {includeTransactions && (
-            <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Pokladna a výdaje ({filteredTransactions.length})</h2>
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Pokladna a výdaje ({filteredTransactions.length})</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Přehled pohybů na pokladně kasy</p>
               </div>
 
               <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                 <thead>
-                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b' }}>
+                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                     <th style={{ padding: '8px 4px', width: '13%' }}>Datum</th>
                     <th style={{ padding: '8px 4px', width: '12%' }}>Typ</th>
                     <th style={{ padding: '8px 4px', width: '22%' }}>Kategorie</th>
@@ -680,7 +825,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </thead>
                 <tbody>
                   {filteredTransactions.map(t => (
-                    <tr key={t.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                    <tr key={t.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                       <td style={{ padding: '8px 4px' }}>{formatDate(t.createdAt)}</td>
                       <td style={{ padding: '8px 4px', fontWeight: 700, color: t.type === 'income' ? '#047857' : '#e11d48' }}>
                         {t.type === 'income' ? 'Příjem' : 'Výdaj'}
@@ -697,15 +842,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
           {/* Page 6: Direct Payments */}
           {includePayments && (
-            <div style={{ pageBreakAfter: 'always', breakAfter: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Připsané platby členů ({filteredPayments.length})</h2>
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Připsané platby členů ({filteredPayments.length})</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Přehled jednotlivých úhrad připsaných členům</p>
               </div>
 
               <table style={{ width: '100%', tableLayout: 'fixed', fontSize: '11px', textAlign: 'left', borderCollapse: 'collapse', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                 <thead>
-                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b' }}>
+                  <tr style={{ borderBottom: '2px solid #0f172a', fontWeight: 700, color: '#1e293b', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                     <th style={{ padding: '8px 4px', width: '13%' }}>Datum</th>
                     <th style={{ padding: '8px 4px', width: '22%' }}>Člen</th>
                     <th style={{ padding: '8px 4px', width: '20%' }}>Způsob úhrady</th>
@@ -715,9 +860,9 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </thead>
                 <tbody>
                   {filteredPayments.map(p => (
-                    <tr key={p.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                    <tr key={p.id} style={{ borderBottom: '1px solid #e2e8f0', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                       <td style={{ padding: '8px 4px' }}>{formatDate(p.createdAt)}</td>
-                      <td style={{ padding: '8px 4px', fontWeight: 700 }}>{memberMap.get(p.memberId) || 'Neznámý'}</td>
+                      <td style={{ padding: '8px 4px', fontWeight: 700 }}>{memberMap.get(p.memberId)?.name || 'Neznámý'}</td>
                       <td style={{ padding: '8px 4px' }}>
                         {p.paymentMethod === 'cash' ? 'Hotovost' : p.paymentMethod === 'bank' ? 'Bankovní převod' : 'Proplacený nákup'}
                       </td>
@@ -732,15 +877,15 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
           {/* Page 7: Period Statistics */}
           {includeStatistics && (
-            <div style={{ paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
-              <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>Statistiky a přehledy kasy</h2>
+            <div className="pdf-section pdf-page-break-before" style={{ pageBreakBefore: 'always', breakBefore: 'page', paddingBottom: '32px', boxSizing: 'border-box', width: '100%' }}>
+              <div className="pdf-header-container pdf-no-break" style={{ borderBottom: '2px solid #0f172a', paddingBottom: '8px', marginBottom: '24px', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>
+                <h2 className="pdf-heading" style={{ fontSize: '18px', fontWeight: 900, textTransform: 'uppercase', margin: 0, pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Statistiky a přehledy kasy</h2>
                 <p style={{ fontSize: '11px', fontWeight: 500, color: '#475569', margin: '4px 0 0 0' }}>Celkový souhrn za celé období {period.name}</p>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                <div style={{ padding: '16px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px' }}>
-                  <h3 style={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', color: '#1e293b', margin: '0 0 12px 0' }}>Top sponzoři kasy (Platby)</h3>
+                <div className="pdf-card" style={{ padding: '16px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                  <h3 className="pdf-heading pdf-no-break" style={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', color: '#1e293b', margin: '0 0 12px 0', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Top sponzoři kasy (Platby)</h3>
                   {sponsorsList.length > 0 ? (
                     <div>
                       {sponsorsList.map((s, idx) => (
@@ -755,8 +900,8 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                   )}
                 </div>
 
-                <div style={{ padding: '16px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px' }}>
-                  <h3 style={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', color: '#1e293b', margin: '0 0 12px 0' }}>Největší dlužníci</h3>
+                <div className="pdf-card" style={{ padding: '16px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                  <h3 className="pdf-heading pdf-no-break" style={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', color: '#1e293b', margin: '0 0 12px 0', pageBreakInside: 'avoid', breakInside: 'avoid', pageBreakAfter: 'avoid', breakAfter: 'avoid' }}>Největší dlužníci</h3>
                   {topDebtorsList.length > 0 ? (
                     <div>
                       {topDebtorsList.map((d, idx) => (
@@ -772,7 +917,7 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </div>
               </div>
 
-              <div style={{ paddingTop: '28px', marginTop: '28px', borderTop: '1px solid #cbd5e1', textAlign: 'center', fontSize: '11px', color: '#94a3b8' }}>
+              <div className="pdf-no-break" style={{ paddingTop: '28px', marginTop: '28px', borderTop: '1px solid #cbd5e1', textAlign: 'center', fontSize: '11px', color: '#94a3b8', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                 <p style={{ margin: 0 }}>Oficiální výkaz týmu {group.name} • Vygenerováno {new Date().toLocaleDateString('cs-CZ')} {new Date().toLocaleTimeString('cs-CZ')}</p>
               </div>
             </div>
@@ -838,6 +983,291 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                         className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-xs"
                       />
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Member & Group Filtering */}
+              <div className="space-y-3 pt-3 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block px-1">Filtr členů a skupin pro export</label>
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
+                    Vybráno: {filteredMembers.length} z {members.length}
+                  </span>
+                </div>
+
+                {/* Filter presets grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('all')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'all'
+                        ? "bg-slate-900 text-white border-slate-900 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Všichni členové</span>
+                    <span className="text-[10px] opacity-70 font-semibold">{members.length} os. (vč. neaktivních)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('active')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'active'
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Pouze aktivní</span>
+                    <span className="text-[10px] opacity-70 font-semibold">{members.filter(m => m.active !== false).length} os.</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('inactive')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'inactive'
+                        ? "bg-rose-600 text-white border-rose-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Pouze neaktivní</span>
+                    <span className="text-[10px] opacity-70 font-semibold">{members.filter(m => m.active === false).length} os.</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('debt')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'debt'
+                        ? "bg-amber-600 text-white border-amber-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Členové s dluhem</span>
+                    <span className="text-[10px] opacity-70 font-semibold">
+                      {Array.from(allMemberBalancesMap.values()).filter(b => b.unpaidDebt > 0).length} os.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('overpaid')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'overpaid'
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>S přeplatkem</span>
+                    <span className="text-[10px] opacity-70 font-semibold">
+                      {Array.from(allMemberBalancesMap.values()).filter(b => b.overpayment > 0).length} os.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('settled')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'settled'
+                        ? "bg-teal-600 text-white border-teal-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Vyrovnaní</span>
+                    <span className="text-[10px] opacity-70 font-semibold">
+                      {Array.from(allMemberBalancesMap.values()).filter(b => b.isSettled).length} os.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMemberFilterType('groups')}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'groups'
+                        ? "bg-purple-600 text-white border-purple-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Skupiny členů</span>
+                    <span className="text-[10px] opacity-70 font-semibold">{memberGroups.length} skupin</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMemberFilterType('custom');
+                      if (selectedCustomMemberIds.length === 0) {
+                        setSelectedCustomMemberIds(members.map(m => m.id));
+                      }
+                    }}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-all border text-left flex flex-col justify-between gap-1",
+                      memberFilterType === 'custom'
+                        ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>Vlastní výběr</span>
+                    <span className="text-[10px] opacity-70 font-semibold">
+                      {selectedCustomMemberIds.length > 0 ? `${selectedCustomMemberIds.length} vybráno` : 'Ruční seznam'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Sub-panel for Groups */}
+                {memberFilterType === 'groups' && (
+                  <div className="p-3.5 bg-purple-50/60 border border-purple-200/70 rounded-2xl space-y-2.5">
+                    <p className="text-xs font-bold text-purple-900">Vyberte skupiny pro export:</p>
+                    {memberGroups.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {memberGroups.map(mg => {
+                          const isSelected = selectedGroupIds.includes(mg.id);
+                          return (
+                            <label
+                              key={mg.id}
+                              className={cn(
+                                "flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all text-xs font-bold",
+                                isSelected
+                                  ? "bg-purple-600 text-white border-purple-600"
+                                  : "bg-white text-slate-800 border-purple-200 hover:border-purple-400"
+                              )}
+                            >
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => {
+                                    if (isSelected) {
+                                      setSelectedGroupIds(selectedGroupIds.filter(id => id !== mg.id));
+                                    } else {
+                                      setSelectedGroupIds([...selectedGroupIds, mg.id]);
+                                    }
+                                  }}
+                                  className="rounded text-purple-600 focus:ring-purple-500"
+                                />
+                                <span>{mg.name}</span>
+                              </div>
+                              <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md", isSelected ? "bg-purple-700 text-purple-100" : "bg-purple-100 text-purple-700")}>
+                                {mg.memberIds?.length || 0} členů
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-purple-700 font-medium italic">
+                        V tomto období zatím nemáte vytvořené žádné skupiny členů. Zvolte standardní filtr nebo Vlastní výběr.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Sub-panel for Custom Member Selection */}
+                {memberFilterType === 'custom' && (
+                  <div className="p-3.5 bg-blue-50/60 border border-blue-200/70 rounded-2xl space-y-3">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                        <input
+                          type="text"
+                          value={memberSearchTerm}
+                          onChange={(e) => setMemberSearchTerm(e.target.value)}
+                          placeholder="Hledat člena jménem..."
+                          className="w-full pl-8 pr-3 py-1.5 bg-white border border-blue-200 rounded-xl text-xs text-slate-800 font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCustomMemberIds(members.map(m => m.id))}
+                          className="px-2.5 py-1 bg-white hover:bg-blue-100 text-blue-700 text-[11px] font-bold rounded-lg border border-blue-200 transition-all"
+                        >
+                          Vybrat vše
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCustomMemberIds([])}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-600 text-[11px] font-bold rounded-lg border border-slate-200 transition-all"
+                        >
+                          Zrušit vše
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCustomMemberIds(members.filter(m => m.active !== false).map(m => m.id))}
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-lg transition-all"
+                        >
+                          Jen aktivní
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="max-h-48 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
+                      {members
+                        .filter(m => m.name.toLowerCase().includes(memberSearchTerm.toLowerCase()))
+                        .map(m => {
+                          const isChecked = selectedCustomMemberIds.includes(m.id);
+                          const isActive = m.active !== false;
+                          const bal = allMemberBalancesMap.get(m.id);
+                          return (
+                            <label
+                              key={m.id}
+                              className={cn(
+                                "flex items-center justify-between p-2 rounded-xl border cursor-pointer transition-all text-xs",
+                                isChecked
+                                  ? "bg-white border-blue-400 shadow-2xs"
+                                  : "bg-white/60 border-slate-200 opacity-60 hover:opacity-100"
+                              )}
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    if (isChecked) {
+                                      setSelectedCustomMemberIds(selectedCustomMemberIds.filter(id => id !== m.id));
+                                    } else {
+                                      setSelectedCustomMemberIds([...selectedCustomMemberIds, m.id]);
+                                    }
+                                  }}
+                                  className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                                />
+                                <span className="font-bold text-slate-800">{m.name}</span>
+                                <span className={cn(
+                                  "px-1.5 py-0.2 rounded text-[10px] font-bold",
+                                  isActive ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-600"
+                                )}>
+                                  {isActive ? 'Aktivní' : 'Neaktivní'}
+                                </span>
+                              </div>
+                              {bal && (
+                                <span className="text-[10px] font-bold text-slate-500">
+                                  {bal.status}
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Filter Summary Banner */}
+                <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between text-xs text-slate-600 font-medium">
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      Export bude obsahovat data pro <strong className="text-slate-900">{filteredMembers.length} členů</strong> ({activeCountInFiltered} aktivních, {inactiveCountInFiltered} neaktivních).
+                    </span>
                   </div>
                 </div>
               </div>

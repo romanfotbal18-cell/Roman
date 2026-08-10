@@ -19,6 +19,7 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
   const [category, setCategory] = useState('');
   const [fromWho, setFromWho] = useState('');
   const [transDate, setTransDate] = useState(new Date().toISOString().split('T')[0]);
+  const [accountType, setAccountType] = useState<'cash' | 'bank'>('cash');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
 
@@ -99,7 +100,9 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
         isDebtExpense: isDebtExpense,
         subItems: processedSubItems,
         debtDetails: processedDebtDetails,
-        cashboxPortion: isDebtExpense ? parseFloat(cashboxPortion) || 0 : null
+        cashboxPortion: isDebtExpense ? parseFloat(cashboxPortion) || 0 : null,
+        paymentMethod: accountType,
+        account: accountType
       };
 
       batch.set(transRef, transactionData);
@@ -204,6 +207,32 @@ export default function ManualTransactionForm({ group, period, type, onSuccess, 
             onChange={(e) => setAmount(e.target.value)}
           />
           <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">{getCurrencySymbol(group.currency)}</span>
+        </div>
+      </div>
+
+      <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 mb-2">
+        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5">Účet / Způsob platby</label>
+        <div className="flex bg-white p-1 rounded-xl border border-slate-200">
+          <button
+            type="button"
+            onClick={() => setAccountType('cash')}
+            className={cn(
+              "flex-1 py-2 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5",
+              accountType === 'cash' ? "bg-amber-500 text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+            )}
+          >
+            💵 Hotovost
+          </button>
+          <button
+            type="button"
+            onClick={() => setAccountType('bank')}
+            className={cn(
+              "flex-1 py-2 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5",
+              accountType === 'bank' ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+            )}
+          >
+            🏦 Na účet
+          </button>
         </div>
       </div>
 

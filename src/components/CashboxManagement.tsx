@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, order
 import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member, Envelope } from '../types';
 import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled } from '../utils';
-import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen, FileSpreadsheet } from 'lucide-react';
+import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen, FileSpreadsheet, Building2, Landmark, CreditCard, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ExportFinanceModal from './ExportFinanceModal';
 
@@ -16,6 +16,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
   const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
   const isReadOnly = userRole === 'viewer';
   const showEnvelopes = isFeatureEnabled(group, 'cashboxEnvelopes');
+  const showSplitAccounts = isFeatureEnabled(group, 'splitCashboxAccounts');
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -29,9 +30,19 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
   const [isDeleting, setIsDeleting] = useState(false);
   const [category, setCategory] = useState('');
   
-  // Filter states
-  const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
+  // Account & Filter states
+  const [accountType, setAccountType] = useState<'cash' | 'bank'>('cash');
+  const [filterAccount, setFilterAccount] = useState<'all' | 'cash' | 'bank'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'income' | 'expense' | 'transfer'>('all');
   const [filterCategory, setFilterCategory] = useState('all');
+
+  // Transfer between cash and bank states
+  const [isAccountTransferModalOpen, setIsAccountTransferModalOpen] = useState(false);
+  const [accountTransferDirection, setAccountTransferDirection] = useState<'cash_to_bank' | 'bank_to_cash'>('cash_to_bank');
+  const [accountTransferAmount, setAccountTransferAmount] = useState('');
+  const [accountTransferNote, setAccountTransferNote] = useState('');
+  const [accountTransferDate, setAccountTransferDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isProcessingAccountTransfer, setIsProcessingAccountTransfer] = useState(false);
   
   // Form states
   const [amount, setAmount] = useState('');
@@ -56,8 +67,11 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
   const [envelopeName, setEnvelopeName] = useState('');
   const [envelopeInitialAmount, setEnvelopeInitialAmount] = useState('0');
   const [envelopeTargetAmount, setEnvelopeTargetAmount] = useState('');
+  const [envelopeTargetDate, setEnvelopeTargetDate] = useState('');
   const [envelopeNote, setEnvelopeNote] = useState('');
   const [envelopeColor, setEnvelopeColor] = useState('indigo');
+  const [envelopeType, setEnvelopeType] = useState<'virtual' | 'cash' | 'bank'>('virtual');
+  const [envelopeTab, setEnvelopeTab] = useState<'all' | 'virtual' | 'cash' | 'bank'>('all');
   const [isSavingEnvelope, setIsSavingEnvelope] = useState(false);
 
   // Transfer Modal states (depositing / withdrawing)
@@ -76,17 +90,39 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
   const incomeCategories = ['Zůstatek', 'Pokuta', 'Sponzor', 'Příspěvek', 'Jiné'];
   const expenseCategories = ['Akce', 'Nákup', 'Služby', 'Cestovné', 'Občerstvení', 'Jiné'];
 
+  const getTransactionAccount = (t: Transaction): 'cash' | 'bank' => {
+    if (t.account === 'bank' || t.paymentMethod === 'bank' || t.paymentMethod === 'purchase') {
+      return 'bank';
+    }
+    return 'cash';
+  };
+
   const filteredTransactions = transactions.filter(t => {
-    const matchesType = filterType === 'all' || t.type === filterType;
+    const isTransfer = t.category === 'Převod' || t.source === 'transfer';
+    const matchesType = filterType === 'all'
+      ? true
+      : filterType === 'transfer'
+      ? isTransfer
+      : filterType === 'income'
+      ? t.type === 'income' && !isTransfer
+      : t.type === 'expense' && !isTransfer;
+
     const matchesCategory = filterCategory === 'all' || t.category === filterCategory;
-    return matchesType && matchesCategory;
+    const matchesAccount = !showSplitAccounts || filterAccount === 'all' || getTransactionAccount(t) === filterAccount;
+    return matchesType && matchesCategory && matchesAccount;
   });
 
   const availableCategories = Array.from(new Set([
     ...(filterType === 'all' || filterType === 'income' ? incomeCategories : []),
     ...(filterType === 'all' || filterType === 'expense' ? expenseCategories : []),
     ...transactions
-      .filter(t => filterType === 'all' || t.type === filterType)
+      .filter(t => {
+        const isTransfer = t.category === 'Převod' || t.source === 'transfer';
+        if (filterType === 'all') return true;
+        if (filterType === 'transfer') return isTransfer;
+        if (filterType === 'income') return t.type === 'income' && !isTransfer;
+        return t.type === 'expense' && !isTransfer;
+      })
       .map(t => t.category)
       .filter(Boolean) as string[]
   ])).sort();
@@ -140,6 +176,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
       setCategory(editingTransaction.category || '');
       setFromWho(editingTransaction.fromWho || '');
       setTransDate(new Date(editingTransaction.createdAt).toISOString().split('T')[0]);
+      setAccountType(getTransactionAccount(editingTransaction));
       setIsSummary(editingTransaction.isSummary || false);
       setSubItems(editingTransaction.subItems?.map(item => ({
         amount: item.amount.toString(),
@@ -226,7 +263,9 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         isDebtExpense: isDebtExpense,
         subItems: processedSubItems,
         debtDetails: processedDebtDetails,
-        cashboxPortion: isDebtExpense ? parseFloat(cashboxPortion) || 0 : null
+        cashboxPortion: isDebtExpense ? parseFloat(cashboxPortion) || 0 : null,
+        paymentMethod: accountType,
+        account: accountType
       };
 
       const batch = writeBatch(db);
@@ -371,6 +410,26 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
       let memberIdToReconcile: string | null = null;
 
+      // Handle linked transfers (transferPairId or fallback for transfer transactions)
+      if (transaction.transferPairId) {
+        const linkedTransferQuery = query(
+          collection(db, `groups/${group.id}/periods/${period.id}/transactions`),
+          where('transferPairId', '==', transaction.transferPairId)
+        );
+        const linkedTransferSnap = await getDocs(linkedTransferQuery);
+        linkedTransferSnap.docs.forEach(d => batch.delete(d.ref));
+      } else if (transaction.category === 'Převod' || transaction.source === 'transfer') {
+        const otherTransfer = transactions.find(t => 
+          t.id !== transaction.id &&
+          (t.category === 'Převod' || t.source === 'transfer') &&
+          t.amount === -transaction.amount &&
+          Math.abs(t.createdAt - transaction.createdAt) <= 3000
+        );
+        if (otherTransfer) {
+          batch.delete(doc(db, `groups/${group.id}/periods/${period.id}/transactions`, otherTransfer.id));
+        }
+      }
+
       if (transaction.paymentId) {
         // Delete all transactions linked to this payment (e.g. income + expense pair)
         const linkedTransQuery = query(
@@ -470,22 +529,69 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     }
   };
 
-  const totalBalance = transactions.reduce((sum, t) => sum + t.amount, 0);
-  const totalInEnvelopes = envelopes.reduce((sum, e) => sum + e.amount, 0);
+  const cashBalance = transactions.reduce((sum, t) => getTransactionAccount(t) === 'cash' ? sum + t.amount : sum, 0);
+  const bankBalance = transactions.reduce((sum, t) => getTransactionAccount(t) === 'bank' ? sum + t.amount : sum, 0);
+  const totalBalance = cashBalance + bankBalance;
+
+  const virtualEnvelopesTotal = envelopes.filter(e => e.type === 'virtual' || !e.type).reduce((sum, e) => sum + e.amount, 0);
+  const cashEnvelopesTotal = envelopes.filter(e => e.type === 'cash').reduce((sum, e) => sum + e.amount, 0);
+  const bankEnvelopesTotal = envelopes.filter(e => e.type === 'bank').reduce((sum, e) => sum + e.amount, 0);
+  const totalInEnvelopes = virtualEnvelopesTotal + cashEnvelopesTotal + bankEnvelopesTotal;
+
+  const freeCashForCash = Math.max(0, cashBalance - cashEnvelopesTotal);
+  const freeBankForBank = Math.max(0, bankBalance - bankEnvelopesTotal);
+  const freeTotalForVirtual = Math.max(0, totalBalance - totalInEnvelopes);
+
+  // Coverage ratios per envelope type so cash and bank deficits don't spill over to each other
+  const cashCoverageRatio = cashEnvelopesTotal > 0 ? Math.min(1, Math.max(0, cashBalance) / cashEnvelopesTotal) : 1;
+  const bankCoverageRatio = bankEnvelopesTotal > 0 ? Math.min(1, Math.max(0, bankBalance) / bankEnvelopesTotal) : 1;
+  const virtualCoverageRatio = totalInEnvelopes > 0 ? Math.min(1, Math.max(0, totalBalance) / totalInEnvelopes) : 1;
+
+  const getEffectiveEnvelopeAmount = (env: Envelope) => {
+    const type = env.type || 'virtual';
+    if (type === 'cash') {
+      return cashCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * cashCoverageRatio)) : env.amount;
+    }
+    if (type === 'bank') {
+      return bankCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * bankCoverageRatio)) : env.amount;
+    }
+    return virtualCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * virtualCoverageRatio)) : env.amount;
+  };
+
+  const getEnvelopeCoverageRatio = (env: Envelope) => {
+    const type = env.type || 'virtual';
+    if (type === 'cash') return cashCoverageRatio;
+    if (type === 'bank') return bankCoverageRatio;
+    return virtualCoverageRatio;
+  };
+
+  const getRemainingDaysText = (targetDateStr?: string) => {
+    if (!targetDateStr) return null;
+    const target = new Date(targetDateStr);
+    if (isNaN(target.getTime())) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays < 0) return 'Termín vypršel';
+    if (diffDays === 0) return 'Dnes je termín!';
+    if (diffDays === 1) return 'Zbývá 1 den';
+    return `Zbývá ${diffDays} dní`;
+  };
 
   const hasDeficit = totalInEnvelopes > 0 && totalBalance < totalInEnvelopes;
   const deficitAmount = hasDeficit ? totalInEnvelopes - Math.max(0, totalBalance) : 0;
   const effectiveTotalInEnvelopes = Math.min(totalInEnvelopes, Math.max(0, totalBalance));
-  const freeCash = Math.max(0, totalBalance - totalInEnvelopes);
-  const envelopeCoverageRatio = totalInEnvelopes > 0 ? Math.min(1, Math.max(0, totalBalance) / totalInEnvelopes) : 1;
+  const freeCash = Math.max(0, cashBalance - cashEnvelopesTotal);
 
   const handleOpenCreateEnvelope = () => {
     setEditingEnvelope(null);
     setEnvelopeName('');
     setEnvelopeInitialAmount('0');
     setEnvelopeTargetAmount('');
+    setEnvelopeTargetDate('');
     setEnvelopeNote('');
     setEnvelopeColor('indigo');
+    setEnvelopeType('virtual');
     setIsEnvelopeModalOpen(true);
   };
 
@@ -494,8 +600,10 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     setEnvelopeName(env.name);
     setEnvelopeInitialAmount(env.amount.toString());
     setEnvelopeTargetAmount(env.targetAmount ? env.targetAmount.toString() : '');
+    setEnvelopeTargetDate(env.targetDate || '');
     setEnvelopeNote(env.note || '');
     setEnvelopeColor(env.color || 'indigo');
+    setEnvelopeType(env.type || 'virtual');
     setIsEnvelopeModalOpen(true);
   };
 
@@ -505,11 +613,27 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
     const initialAmt = parseFloat(envelopeInitialAmount) || 0;
     const targetAmt = envelopeTargetAmount ? parseFloat(envelopeTargetAmount) || 0 : undefined;
+    const effectiveType = showSplitAccounts ? envelopeType : 'virtual';
+    const targetDateValue = envelopeTargetDate.trim() || null;
+
+    let availableLimit = freeTotalForVirtual;
+    let limitLabel = "celkového zůstatku";
+
+    if (effectiveType === 'cash') {
+      availableLimit = freeCashForCash + (editingEnvelope && editingEnvelope.type === 'cash' ? editingEnvelope.amount : 0);
+      limitLabel = "fyzické hotovosti";
+    } else if (effectiveType === 'bank') {
+      availableLimit = freeBankForBank + (editingEnvelope && editingEnvelope.type === 'bank' ? editingEnvelope.amount : 0);
+      limitLabel = "peněz na účtu";
+    } else {
+      availableLimit = freeTotalForVirtual + (editingEnvelope ? editingEnvelope.amount : 0);
+      limitLabel = "celkového zůstatku";
+    }
 
     if (editingEnvelope) {
       const diff = initialAmt - editingEnvelope.amount;
-      if (diff > 0 && diff > freeCash) {
-        alert(`Není dostatek volné hotovosti pro navýšení o ${formatCurrency(diff, group.currency)}. Volná hotovost je ${formatCurrency(freeCash, group.currency)}.`);
+      if (diff > 0 && diff > availableLimit) {
+        alert(`Není dostatek prostředků v ${limitLabel} pro navýšení o ${formatCurrency(diff, group.currency)}. Dostupné: ${formatCurrency(availableLimit, group.currency)}.`);
         return;
       }
       setIsSavingEnvelope(true);
@@ -519,8 +643,10 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
           name: envelopeName.trim(),
           amount: initialAmt >= 0 ? initialAmt : 0,
           targetAmount: targetAmt && targetAmt > 0 ? targetAmt : null,
+          targetDate: targetDateValue,
           note: envelopeNote.trim(),
-          color: envelopeColor
+          color: envelopeColor,
+          type: effectiveType
         });
         setIsEnvelopeModalOpen(false);
       } catch (error) {
@@ -529,8 +655,8 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         setIsSavingEnvelope(false);
       }
     } else {
-      if (initialAmt > freeCash) {
-        alert(`Není dostatek volné hotovosti pro vklad ${formatCurrency(initialAmt, group.currency)}. Aktuální volná hotovost je ${formatCurrency(freeCash, group.currency)}.`);
+      if (initialAmt > availableLimit) {
+        alert(`Není dostatek prostředků v ${limitLabel} pro vklad ${formatCurrency(initialAmt, group.currency)}. Dostupné: ${formatCurrency(availableLimit, group.currency)}.`);
         return;
       }
       setIsSavingEnvelope(true);
@@ -540,8 +666,10 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
           name: envelopeName.trim(),
           amount: initialAmt >= 0 ? initialAmt : 0,
           targetAmount: targetAmt && targetAmt > 0 ? targetAmt : null,
+          targetDate: targetDateValue,
           note: envelopeNote.trim(),
           color: envelopeColor,
+          type: effectiveType,
           periodId: period.id,
           createdAt: Date.now()
         });
@@ -579,9 +707,21 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     const amt = parseFloat(transferAmount);
     if (isNaN(amt) || amt <= 0) return;
 
+    const envType = selectedTransferEnvelope.type || 'virtual';
+    let availableFunds = freeTotalForVirtual;
+    let limitName = "celkové pokladny";
+
+    if (envType === 'cash') {
+      availableFunds = freeCashForCash;
+      limitName = "fyzické hotovosti";
+    } else if (envType === 'bank') {
+      availableFunds = freeBankForBank;
+      limitName = "bankovního účtu";
+    }
+
     if (transferType === 'deposit') {
-      if (amt > freeCash) {
-        alert(`Nelze vložit více, než je aktuální volná hotovost (${formatCurrency(freeCash, group.currency)}).`);
+      if (amt > availableFunds) {
+        alert(`Nelze vložit více, než je dostupné v ${limitName} (${formatCurrency(availableFunds, group.currency)}).`);
         return;
       }
     } else {
@@ -598,7 +738,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         : selectedTransferEnvelope.amount - amt;
 
       const envRef = doc(db, `groups/${group.id}/periods/${period.id}/envelopes`, selectedTransferEnvelope.id);
-      await updateDoc(envRef, { amount: newAmount });
+      await updateDoc(envRef, { amount: Math.max(0, newAmount) });
       setIsTransferModalOpen(false);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}/periods/${period.id}/envelopes/${selectedTransferEnvelope.id}`);
@@ -607,10 +747,195 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     }
   };
 
+  const handleAccountTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isReadOnly || isProcessingAccountTransfer) return;
+    const amt = parseFloat(accountTransferAmount);
+    if (isNaN(amt) || amt <= 0) return;
+
+    setIsProcessingAccountTransfer(true);
+    try {
+      const now = new Date();
+      const selectedDate = new Date(accountTransferDate || new Date().toISOString().split('T')[0]);
+      selectedDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+      const createdAt = selectedDate.getTime();
+
+      const batch = writeBatch(db);
+      const transPath = `groups/${group.id}/periods/${period.id}/transactions`;
+
+      const fromRef = doc(collection(db, transPath));
+      const toRef = doc(collection(db, transPath));
+      const transferPairId = fromRef.id + '_' + toRef.id;
+
+      const noteText = accountTransferNote.trim() || (accountTransferDirection === 'cash_to_bank' ? 'Vklad na bankovní účet' : 'Výběr z bankovního účtu');
+
+      if (accountTransferDirection === 'cash_to_bank') {
+        // Cash expense
+        batch.set(fromRef, {
+          amount: -amt,
+          type: 'expense',
+          source: 'transfer',
+          category: 'Převod',
+          note: noteText,
+          fromWho: 'Převod do banky',
+          periodId: period.id,
+          createdAt: createdAt,
+          paymentMethod: 'cash',
+          account: 'cash',
+          transferPairId
+        });
+        // Bank income
+        batch.set(toRef, {
+          amount: amt,
+          type: 'income',
+          source: 'transfer',
+          category: 'Převod',
+          note: noteText,
+          fromWho: 'Převod z hotovosti',
+          periodId: period.id,
+          createdAt: createdAt + 1,
+          paymentMethod: 'bank',
+          account: 'bank',
+          transferPairId
+        });
+      } else {
+        // Bank expense
+        batch.set(fromRef, {
+          amount: -amt,
+          type: 'expense',
+          source: 'transfer',
+          category: 'Převod',
+          note: noteText,
+          fromWho: 'Převod do hotovosti',
+          periodId: period.id,
+          createdAt: createdAt,
+          paymentMethod: 'bank',
+          account: 'bank',
+          transferPairId
+        });
+        // Cash income
+        batch.set(toRef, {
+          amount: amt,
+          type: 'income',
+          source: 'transfer',
+          category: 'Převod',
+          note: noteText,
+          fromWho: 'Převod z banky',
+          periodId: period.id,
+          createdAt: createdAt + 1,
+          paymentMethod: 'cash',
+          account: 'cash',
+          transferPairId
+        });
+      }
+
+      await batch.commit();
+      setIsAccountTransferModalOpen(false);
+      setAccountTransferAmount('');
+      setAccountTransferNote('');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'transactions');
+    } finally {
+      setIsProcessingAccountTransfer(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header Summary Cards */}
-      {showEnvelopes ? (
+      {showSplitAccounts ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Bank Account Card */}
+          <div className="bento-card bg-white p-6 flex flex-col justify-between shadow-sm border border-bento-card-border">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center font-bold">
+                  <Landmark className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">Na účtu</p>
+                  <p className="text-[11px] font-semibold text-slate-500">Peníze v bance (celkem)</p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <p className="text-3xl font-black text-indigo-900 tracking-tight">
+                {formatCurrency(bankBalance, group.currency)}
+              </p>
+              {showEnvelopes && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-0.5 text-[11px]">
+                  <p className="font-extrabold text-indigo-700">
+                    Vyčleněno v obálkách na účtu: {formatCurrency(bankEnvelopesTotal, group.currency)}
+                  </p>
+                  <p className="text-slate-400 font-medium text-[10px]">
+                    Nevyčleněné peníze na účtu: {formatCurrency(freeBankForBank, group.currency)}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Cash Balance Card */}
+          <div className="bento-card bg-white p-6 flex flex-col justify-between shadow-sm border border-bento-card-border">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold">
+                  <Coins className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">V hotovosti</p>
+                  <p className="text-[11px] font-semibold text-slate-500">Fyzická hotovost (celkem)</p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <p className="text-3xl font-black text-slate-900 tracking-tight">
+                {formatCurrency(cashBalance, group.currency)}
+              </p>
+              {showEnvelopes && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-0.5 text-[11px]">
+                  <p className="font-extrabold text-amber-800">
+                    Vyčleněno v obálkách v hotovosti: {formatCurrency(cashEnvelopesTotal, group.currency)}
+                  </p>
+                  <p className="text-slate-400 font-medium text-[10px]">
+                    Nevyčleněná hotovost: {formatCurrency(freeCashForCash, group.currency)}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Total Balance Card */}
+          <div className="bento-card bg-slate-900 text-white p-6 flex flex-col justify-between shadow-sm border border-slate-800">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-white/10 text-emerald-400 rounded-2xl flex items-center justify-center font-bold">
+                  <PiggyBank className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em]">Celkem v pokladně</p>
+                  <p className="text-[11px] font-semibold text-slate-400">Účet + hotovost</p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <p className="text-3xl font-black tracking-tight text-white">
+                {formatCurrency(totalBalance, group.currency)}
+              </p>
+              {showEnvelopes && (
+                <div className="mt-3 pt-2.5 border-t border-slate-800 space-y-0.5 text-[11px]">
+                  <p className="font-extrabold text-emerald-400">
+                    Vyčleněno v obálkách celkem: {formatCurrency(totalInEnvelopes, group.currency)}
+                  </p>
+                  <p className="text-slate-400 font-medium text-[10px]">
+                    (Klasické: {formatCurrency(virtualEnvelopesTotal, group.currency)}, Hotovostní: {formatCurrency(cashEnvelopesTotal, group.currency)}, Na účtu: {formatCurrency(bankEnvelopesTotal, group.currency)})
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : showEnvelopes ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           {/* Available Cash Card */}
           <div className={cn(
@@ -626,8 +951,8 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                   <Wallet className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">Volná hotovost</p>
-                  <p className="text-[11px] font-semibold text-slate-500">Mimo obálky</p>
+                  <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">Hotovost</p>
+                  <p className="text-[11px] font-semibold text-slate-500">Fyzická hotovost</p>
                 </div>
               </div>
             </div>
@@ -738,6 +1063,15 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               <TrendingDown className="w-4 h-4" />
               <span>Zapsat výdaj</span>
             </button>
+            {showSplitAccounts && (
+              <button
+                onClick={() => setIsAccountTransferModalOpen(true)}
+                className="flex-1 sm:flex-initial btn-bento-primary bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/10 py-2.5 px-4 text-xs uppercase tracking-wider"
+              >
+                <ArrowLeftRight className="w-4 h-4" />
+                <span>Přelít peníze</span>
+              </button>
+            )}
             {showEnvelopes && (
               <button
                 onClick={handleOpenCreateEnvelope}
@@ -774,163 +1108,310 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
       {/* Obálky Pokladny Section */}
       {showEnvelopes && (
-        <div className="bento-card bg-white shadow-sm overflow-hidden p-6 space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
-                <FolderOpen className="w-4 h-4" />
+        <div className="bento-card bg-white shadow-sm overflow-hidden p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                  <FolderOpen className="w-4 h-4" />
+                </div>
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-main">
+                  Obálky pokladny (Vyčleněné úspory)
+                </h3>
               </div>
-              <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-main">
-                Obálky pokladny (Vyčleněné úspory)
-              </h3>
-            </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Rozložení dostupné hotovosti na konkrétní účely, akce nebo vybavení.
-            </p>
-          </div>
-
-          {!isReadOnly && (
-            <button
-              onClick={handleOpenCreateEnvelope}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold text-xs transition-all shadow-2xs hover:scale-[1.01]"
-            >
-              <FolderPlus className="w-4 h-4" />
-              <span>Vytvořit obálku</span>
-            </button>
-          )}
-        </div>
-
-        {envelopes.length === 0 ? (
-          <div className="p-8 text-center bg-slate-50/70 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center space-y-3">
-            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
-              <FolderPlus className="w-6 h-6" />
-            </div>
-            <div className="max-w-md">
-              <h4 className="font-extrabold text-slate-800 text-sm">Zatím nebyly vytvořeny žádné obálky</h4>
-              <p className="text-xs text-slate-500 mt-1">
-                Obálky vám umožní z dostupné hotovosti přehledně odložit peníze stranou na různé účely (např. nové míče, rozlučku nebo zimní soustředění).
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Vyčlenění peněz na konkrétní účely z volné hotovosti nebo bankovního účtu.
               </p>
             </div>
-            {!isReadOnly && (
-              <button
-                onClick={handleOpenCreateEnvelope}
-                className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-md shadow-indigo-600/10"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Vytvořit první obálku</span>
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {envelopes.map((env) => {
-              const theme = getColorClasses(env.color);
-              const effectiveAmount = envelopeCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * envelopeCoverageRatio)) : env.amount;
-              const hasTarget = env.targetAmount && env.targetAmount > 0;
-              const percent = hasTarget ? Math.min(100, Math.round((effectiveAmount / env.targetAmount!) * 100)) : 0;
 
-              return (
-                <div
-                  key={env.id}
+            <div className="flex items-center gap-2">
+              {!isReadOnly && (
+                <button
+                  onClick={handleOpenCreateEnvelope}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold text-xs transition-all shadow-2xs shrink-0"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>Vytvořit obálku</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Left/Right Tab Switcher for Envelope Types */}
+          {showSplitAccounts && envelopes.length > 0 && (
+            <div className="flex items-center justify-between gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-200/80">
+              <button
+                type="button"
+                onClick={() => {
+                  const opts: ('all' | 'virtual' | 'cash' | 'bank')[] = ['all', 'virtual', 'cash', 'bank'];
+                  const idx = opts.indexOf(envelopeTab);
+                  setEnvelopeTab(opts[(idx - 1 + opts.length) % opts.length]);
+                }}
+                className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-white rounded-xl transition-all shadow-2xs shrink-0"
+                title="Předchozí typ obálek"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar px-1 py-0.5">
+                <button
+                  type="button"
+                  onClick={() => setEnvelopeTab('all')}
                   className={cn(
-                    "rounded-2xl p-5 border flex flex-col justify-between space-y-4 transition-all shadow-2xs hover:shadow-sm",
-                    theme.cardBg
+                    "px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap",
+                    envelopeTab === 'all'
+                      ? "bg-white text-slate-900 shadow-2xs border border-slate-200/60"
+                      : "text-slate-500 hover:text-slate-800"
                   )}
                 >
-                  <div>
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className={cn("px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider", theme.badgeBg)}>
-                          <Folder className="w-3 h-3 inline mr-1" />
-                          Obálka
-                        </span>
-                      </div>
-                      {!isReadOnly && (
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => handleOpenEditEnvelope(env)}
-                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition-all"
-                            title="Upravit obálku"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setDeleteEnvelopeConfirmId(env.id)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition-all"
-                            title="Smazat obálku"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                  <span>📁</span>
+                  <span>Všechny</span>
+                  <span className={cn(
+                    "px-1.5 py-0.2 rounded-full text-[10px] font-black",
+                    envelopeTab === 'all' ? "bg-indigo-50 text-indigo-700" : "bg-slate-200/70 text-slate-600"
+                  )}>
+                    {envelopes.length}
+                  </span>
+                </button>
 
-                    <h4 className="font-extrabold text-slate-900 text-base mt-2">{env.name}</h4>
-                    {env.note && (
-                      <p className="text-xs text-slate-500 line-clamp-2 mt-0.5">{env.note}</p>
-                    )}
-
-                    <div className="mt-4">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
-                        {envelopeCoverageRatio < 1 ? 'Skutečně dostupné v obálce' : 'Uloženo v obálce'}
-                      </span>
-                      <p className={cn("text-2xl font-black tracking-tight", theme.accentText)}>
-                        {formatCurrency(effectiveAmount, group.currency)}
-                      </p>
-                      {envelopeCoverageRatio < 1 && (
-                        <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 inline-block mt-1">
-                          Čerpáno z obálky • Nominál: {formatCurrency(env.amount, group.currency)}
-                        </span>
-                      )}
-                    </div>
-
-                    {hasTarget && (
-                      <div className="mt-3 space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px] font-bold text-slate-600">
-                          <span>Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
-                          <span>{percent}%</span>
-                        </div>
-                        <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden">
-                          <div
-                            className={cn("h-full rounded-full transition-all duration-500", theme.progressBg)}
-                            style={{ width: `${percent}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {!isReadOnly && (
-                    <div className="pt-2 border-t border-slate-200/60 flex items-center gap-2">
-                      <button
-                        onClick={() => handleOpenTransferModal(env, 'deposit')}
-                        className="flex-1 py-2 px-3 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Vložit</span>
-                      </button>
-                      <button
-                        onClick={() => handleOpenTransferModal(env, 'withdraw')}
-                        disabled={env.amount <= 0}
-                        className={cn(
-                          "flex-1 py-2 px-3 bg-white border rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs",
-                          env.amount <= 0
-                            ? "opacity-50 cursor-not-allowed border-slate-200 text-slate-400"
-                            : "hover:bg-amber-50 text-amber-700 border-amber-200"
-                        )}
-                      >
-                        <TrendingDown className="w-3.5 h-3.5" />
-                        <span>Vybrat</span>
-                      </button>
-                    </div>
+                <button
+                  type="button"
+                  onClick={() => setEnvelopeTab('virtual')}
+                  className={cn(
+                    "px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap",
+                    envelopeTab === 'virtual'
+                      ? "bg-white text-slate-900 shadow-2xs border border-slate-200/60"
+                      : "text-slate-500 hover:text-slate-800"
                   )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                >
+                  <span>🌐</span>
+                  <span>Klasické</span>
+                  <span className={cn(
+                    "px-1.5 py-0.2 rounded-full text-[10px] font-black",
+                    envelopeTab === 'virtual' ? "bg-slate-100 text-slate-700" : "bg-slate-200/70 text-slate-600"
+                  )}>
+                    {envelopes.filter(e => e.type === 'virtual' || !e.type).length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEnvelopeTab('cash')}
+                  className={cn(
+                    "px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap",
+                    envelopeTab === 'cash'
+                      ? "bg-amber-500 text-white shadow-2xs"
+                      : "text-slate-500 hover:text-slate-800"
+                  )}
+                >
+                  <span>💵</span>
+                  <span>Hotovostní</span>
+                  <span className={cn(
+                    "px-1.5 py-0.2 rounded-full text-[10px] font-black",
+                    envelopeTab === 'cash' ? "bg-white text-amber-800" : "bg-slate-200/70 text-slate-600"
+                  )}>
+                    {envelopes.filter(e => e.type === 'cash').length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEnvelopeTab('bank')}
+                  className={cn(
+                    "px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap",
+                    envelopeTab === 'bank'
+                      ? "bg-indigo-600 text-white shadow-2xs"
+                      : "text-slate-500 hover:text-slate-800"
+                  )}
+                >
+                  <span>🏦</span>
+                  <span>Na účtu</span>
+                  <span className={cn(
+                    "px-1.5 py-0.2 rounded-full text-[10px] font-black",
+                    envelopeTab === 'bank' ? "bg-white text-indigo-700" : "bg-slate-200/70 text-slate-600"
+                  )}>
+                    {envelopes.filter(e => e.type === 'bank').length}
+                  </span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const opts: ('all' | 'virtual' | 'cash' | 'bank')[] = ['all', 'virtual', 'cash', 'bank'];
+                  const idx = opts.indexOf(envelopeTab);
+                  setEnvelopeTab(opts[(idx + 1) % opts.length]);
+                }}
+                className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-white rounded-xl transition-all shadow-2xs shrink-0"
+                title="Následující typ obálek"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {envelopes.length === 0 ? (
+            <div className="p-6 text-center bg-slate-50/70 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center space-y-2">
+              <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
+                <FolderPlus className="w-5 h-5" />
+              </div>
+              <div className="max-w-md">
+                <h4 className="font-extrabold text-slate-800 text-xs">Zatím nebyly vytvořeny žádné obálky</h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Obálky vám umožní přehledně odložit peníze stranou na různé účely (např. nové míče, rozlučku nebo soustředění).
+                </p>
+              </div>
+              {!isReadOnly && (
+                <button
+                  onClick={handleOpenCreateEnvelope}
+                  className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Vytvořit první obálku</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {envelopes
+                .filter(env => {
+                  if (envelopeTab === 'all') return true;
+                  if (envelopeTab === 'virtual') return env.type === 'virtual' || !env.type;
+                  return env.type === envelopeTab;
+                })
+                .map((env) => {
+                  const theme = getColorClasses(env.color);
+                  const effectiveAmount = getEffectiveEnvelopeAmount(env);
+                  const coverageRatio = getEnvelopeCoverageRatio(env);
+                  const hasTarget = env.targetAmount && env.targetAmount > 0;
+                  const percent = hasTarget ? Math.min(100, Math.round((effectiveAmount / env.targetAmount!) * 100)) : 0;
+                  const remainingText = getRemainingDaysText(env.targetDate);
+
+                  return (
+                    <div
+                      key={env.id}
+                      className={cn(
+                        "rounded-xl p-3.5 border flex flex-col justify-between space-y-3 transition-all shadow-2xs hover:shadow-xs",
+                        theme.cardBg
+                      )}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-1.5">
+                          <span className={cn("px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0", theme.badgeBg)}>
+                            <span>
+                              {showSplitAccounts && env.type === 'cash'
+                                ? '💵 Hotovostní'
+                                : showSplitAccounts && env.type === 'bank'
+                                ? '🏦 Na účtu'
+                                : '🌐 Klasická'}
+                            </span>
+                          </span>
+                          {!isReadOnly && (
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <button
+                                onClick={() => handleOpenEditEnvelope(env)}
+                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-md transition-all"
+                                title="Upravit obálku"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => setDeleteEnvelopeConfirmId(env.id)}
+                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-md transition-all"
+                                title="Smazat obálku"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <h4 className="font-extrabold text-slate-900 text-sm leading-tight line-clamp-1">{env.name}</h4>
+                          {env.note && (
+                            <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{env.note}</p>
+                          )}
+                        </div>
+
+                        <div>
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
+                            {coverageRatio < 1 ? 'Skutečně dostupné' : 'Uloženo v obálce'}
+                          </span>
+                          <p className={cn("text-xl font-black tracking-tight font-mono", theme.accentText)}>
+                            {formatCurrency(effectiveAmount, group.currency)}
+                          </p>
+                          {coverageRatio < 1 && (
+                            <span className="text-[9px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block mt-0.5">
+                              Čerpáno • Nominál: {formatCurrency(env.amount, group.currency)}
+                            </span>
+                          )}
+                        </div>
+
+                        {hasTarget && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[10px] font-bold text-slate-600">
+                              <span>Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
+                              <span>{percent}%</span>
+                            </div>
+                            <div className="w-full bg-slate-200/80 rounded-full h-1.5 overflow-hidden">
+                              <div
+                                className={cn("h-full rounded-full transition-all duration-500", theme.progressBg)}
+                                style={{ width: `${percent}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {env.targetDate && (
+                          <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-slate-200/60 font-medium text-slate-500">
+                            <span className="flex items-center gap-1 font-semibold text-slate-600 text-[10px]">
+                              <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                              <span>{new Date(env.targetDate).toLocaleDateString('cs-CZ')}</span>
+                            </span>
+                            {remainingText && (
+                              <span className={cn(
+                                "px-1.5 py-0.2 rounded-md font-bold text-[9px]",
+                                remainingText === 'Termín vypršel'
+                                  ? "bg-rose-100 text-rose-800"
+                                  : "bg-indigo-100 text-indigo-800"
+                              )}>
+                                {remainingText}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {!isReadOnly && (
+                        <div className="pt-2 border-t border-slate-200/60 flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleOpenTransferModal(env, 'deposit')}
+                            className="flex-1 py-1.5 px-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 transition-all shadow-2xs"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Vložit</span>
+                          </button>
+                          <button
+                            onClick={() => handleOpenTransferModal(env, 'withdraw')}
+                            disabled={env.amount <= 0}
+                            className={cn(
+                              "flex-1 py-1.5 px-2 bg-white border rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 transition-all shadow-2xs",
+                              env.amount <= 0
+                                ? "opacity-50 cursor-not-allowed border-slate-200 text-slate-400"
+                                : "hover:bg-amber-50 text-amber-700 border-amber-200"
+                            )}
+                          >
+                            <TrendingDown className="w-3 h-3" />
+                            <span>Vybrat</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Transaction History */}
@@ -942,6 +1423,38 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
           </div>
           
           <div className="flex items-center gap-3 w-full md:w-auto overflow-x-auto pb-2 md:pb-0 custom-scrollbar">
+            {showSplitAccounts && (
+              <div className="flex p-1 bg-slate-100 rounded-xl">
+                <button
+                  onClick={() => setFilterAccount('all')}
+                  className={cn(
+                    "px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                    filterAccount === 'all' ? "bg-white text-bento-text-main shadow-sm" : "text-bento-text-muted hover:text-bento-text-main"
+                  )}
+                >
+                  Všechny účty
+                </button>
+                <button
+                  onClick={() => setFilterAccount('cash')}
+                  className={cn(
+                    "px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                    filterAccount === 'cash' ? "bg-amber-500 text-white shadow-sm" : "text-amber-800 hover:text-amber-900"
+                  )}
+                >
+                  💵 Hotovost
+                </button>
+                <button
+                  onClick={() => setFilterAccount('bank')}
+                  className={cn(
+                    "px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                    filterAccount === 'bank' ? "bg-indigo-600 text-white shadow-sm" : "text-indigo-700 hover:text-indigo-900"
+                  )}
+                >
+                  🏦 Na účet
+                </button>
+              </div>
+            )}
+
             <div className="flex p-1 bg-slate-100 rounded-xl">
               <button
                 onClick={() => setFilterType('all')}
@@ -970,6 +1483,17 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               >
                 Výdaje
               </button>
+              {showSplitAccounts && (
+                <button
+                  onClick={() => setFilterType('transfer')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                    filterType === 'transfer' ? "bg-white text-blue-600 shadow-sm" : "text-bento-text-muted hover:text-blue-500"
+                  )}
+                >
+                  Převody
+                </button>
+              )}
             </div>
 
             <div className="h-8 w-px bg-slate-200 hidden md:block"></div>
@@ -1013,6 +1537,22 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                       {t.isDebtExpense && (
                         <span className="ml-2 text-[8px] font-black uppercase tracking-widest bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">
                           Na dluh
+                        </span>
+                      )}
+                      {showSplitAccounts && (
+                        <span className={cn(
+                          "ml-2 text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full inline-flex items-center gap-0.5",
+                          t.category === 'Převod' || t.source === 'transfer'
+                            ? "bg-blue-100 text-blue-700"
+                            : getTransactionAccount(t) === 'bank'
+                            ? "bg-indigo-100 text-indigo-700"
+                            : "bg-amber-100 text-amber-800"
+                        )}>
+                          {t.category === 'Převod' || t.source === 'transfer'
+                            ? '⇄ Převod'
+                            : getTransactionAccount(t) === 'bank'
+                            ? '🏦 Na účet'
+                            : '💵 Hotovost'}
                         </span>
                       )}
                     </span>
@@ -1151,6 +1691,36 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 font-black text-slate-300 text-2xl tracking-tighter">{getCurrencySymbol(group.currency)}</span>
                   </div>
                 </div>
+
+                {showSplitAccounts && (
+                  <div className="bg-slate-50 p-3 rounded-[1.5rem] border border-slate-100 mb-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-1.5">
+                      Účet / Způsob úhrady
+                    </label>
+                    <div className="flex bg-white p-1 rounded-xl border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setAccountType('cash')}
+                        className={cn(
+                          "flex-1 py-2 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5",
+                          accountType === 'cash' ? "bg-amber-500 text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+                        )}
+                      >
+                        💵 Hotovost
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAccountType('bank')}
+                        className={cn(
+                          "flex-1 py-2 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5",
+                          accountType === 'bank' ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+                        )}
+                      >
+                        🏦 Na účet
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {isDebtExpense && (
                   <div className="space-y-4 bg-slate-50 p-4 rounded-[2rem] border border-slate-100">
@@ -1694,6 +2264,54 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               </div>
 
               <form onSubmit={handleSaveEnvelope} className="space-y-4">
+                {showSplitAccounts && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1.5">
+                      Typ obálky
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-2xl">
+                      <button
+                        type="button"
+                        onClick={() => setEnvelopeType('virtual')}
+                        className={cn(
+                          "py-2 px-1 text-[11px] font-extrabold rounded-xl transition-all text-center flex flex-col items-center justify-center gap-0.5",
+                          envelopeType === 'virtual' ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                        )}
+                      >
+                        <span className="text-xs">🌐</span>
+                        <span>Klasická</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEnvelopeType('cash')}
+                        className={cn(
+                          "py-2 px-1 text-[11px] font-extrabold rounded-xl transition-all text-center flex flex-col items-center justify-center gap-0.5",
+                          envelopeType === 'cash' ? "bg-white text-amber-800 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                        )}
+                      >
+                        <span className="text-xs">💵</span>
+                        <span>Hotovostní</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEnvelopeType('bank')}
+                        className={cn(
+                          "py-2 px-1 text-[11px] font-extrabold rounded-xl transition-all text-center flex flex-col items-center justify-center gap-0.5",
+                          envelopeType === 'bank' ? "bg-white text-indigo-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                        )}
+                      >
+                        <span className="text-xs">🏦</span>
+                        <span>Na účtu</span>
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1 px-1 font-medium">
+                      {envelopeType === 'virtual' && 'Klasická obálka čerpá z celkového zůstatku pokladny.'}
+                      {envelopeType === 'cash' && 'Hotovostní obálka vyčleňuje peníze z fyzické hotovosti.'}
+                      {envelopeType === 'bank' && 'Obálka na účtu vyčleňuje peníze z bankovního účtu.'}
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
                     Název obálky <span className="text-rose-500">*</span>
@@ -1723,7 +2341,16 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                       onChange={(e) => setEnvelopeInitialAmount(e.target.value)}
                     />
                     <span className="text-[10px] text-slate-400 font-medium block mt-1">
-                      K dispozici: <strong className="text-slate-700">{formatCurrency(freeCash + (editingEnvelope ? editingEnvelope.amount : 0), group.currency)}</strong>
+                      K dispozici: <strong className="text-slate-700">
+                        {formatCurrency(
+                          envelopeType === 'cash'
+                            ? freeCashForCash + (editingEnvelope && editingEnvelope.type === 'cash' ? editingEnvelope.amount : 0)
+                            : envelopeType === 'bank'
+                            ? freeBankForBank + (editingEnvelope && editingEnvelope.type === 'bank' ? editingEnvelope.amount : 0)
+                            : freeTotalForVirtual + (editingEnvelope ? editingEnvelope.amount : 0),
+                          group.currency
+                        )}
+                      </strong>
                     </span>
                   </div>
 
@@ -1741,6 +2368,18 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                       onChange={(e) => setEnvelopeTargetAmount(e.target.value)}
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                    Cílový termín / datum <span className="text-slate-300 font-normal">(volitelné)</span>
+                  </label>
+                  <input
+                    type="date"
+                    className="w-full px-4 py-2 bg-slate-50 border border-bento-card-border rounded-xl font-bold text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    value={envelopeTargetDate}
+                    onChange={(e) => setEnvelopeTargetDate(e.target.value)}
+                  />
                 </div>
 
                 <div>
@@ -1845,69 +2484,79 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               </div>
 
               <form onSubmit={handleProcessTransfer} className="space-y-4">
-                <div className="flex p-1 bg-slate-100 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => setTransferType('deposit')}
-                    className={cn(
-                      "flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
-                      transferType === 'deposit' ? "bg-white text-emerald-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
-                    )}
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Vložit z volné hotovosti</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTransferType('withdraw')}
-                    className={cn(
-                      "flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
-                      transferType === 'withdraw' ? "bg-white text-amber-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
-                    )}
-                  >
-                    <TrendingDown className="w-3.5 h-3.5" />
-                    <span>Vybrat do volné hotovosti</span>
-                  </button>
-                </div>
+                {(() => {
+                  const envType = selectedTransferEnvelope.type || 'virtual';
+                  const sourceLabel = envType === 'cash' ? 'hotovosti' : envType === 'bank' ? 'účtu' : 'pokladny';
+                  const availBal = envType === 'cash' ? freeCashForCash : envType === 'bank' ? freeBankForBank : freeTotalForVirtual;
 
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
-                  <div className="flex justify-between text-slate-600">
-                    <span>V obálce aktuálně:</span>
-                    <strong className="font-mono text-slate-900">{formatCurrency(selectedTransferEnvelope.amount, group.currency)}</strong>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Volná hotovost mimo obálky:</span>
-                    <strong className="font-mono text-indigo-700">{formatCurrency(freeCash, group.currency)}</strong>
-                  </div>
-                </div>
+                  return (
+                    <>
+                      <div className="flex p-1 bg-slate-100 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => setTransferType('deposit')}
+                          className={cn(
+                            "flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
+                            transferType === 'deposit' ? "bg-white text-emerald-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                          )}
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Vložit z {sourceLabel}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTransferType('withdraw')}
+                          className={cn(
+                            "flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
+                            transferType === 'withdraw' ? "bg-white text-amber-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                          )}
+                        >
+                          <TrendingDown className="w-3.5 h-3.5" />
+                          <span>Vybrat do {sourceLabel}</span>
+                        </button>
+                      </div>
 
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
-                    Částka k {transferType === 'deposit' ? 'převodu do obálky' : 'výběru z obálky'}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.01"
-                      required
-                      placeholder="0"
-                      className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl font-mono font-black text-lg text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 pr-24"
-                      value={transferAmount}
-                      onChange={(e) => setTransferAmount(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const maxVal = transferType === 'deposit' ? Math.max(0, freeCash) : selectedTransferEnvelope.amount;
-                        setTransferAmount(maxVal.toString());
-                      }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[10px] font-extrabold uppercase tracking-wider transition-all"
-                    >
-                      Max
-                    </button>
-                  </div>
-                </div>
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                        <div className="flex justify-between text-slate-600">
+                          <span>V obálce aktuálně:</span>
+                          <strong className="font-mono text-slate-900">{formatCurrency(selectedTransferEnvelope.amount, group.currency)}</strong>
+                        </div>
+                        <div className="flex justify-between text-slate-600">
+                          <span>Dostupné k vložení z ({sourceLabel}):</span>
+                          <strong className="font-mono text-indigo-700">{formatCurrency(availBal, group.currency)}</strong>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                          Částka k {transferType === 'deposit' ? 'převodu do obálky' : 'výběru z obálky'}
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            step="any"
+                            min="0.01"
+                            required
+                            placeholder="0"
+                            className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl font-mono font-black text-lg text-bento-text-main focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 pr-24"
+                            value={transferAmount}
+                            onChange={(e) => setTransferAmount(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const maxVal = transferType === 'deposit' ? Math.max(0, availBal) : selectedTransferEnvelope.amount;
+                              setTransferAmount(maxVal.toString());
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[10px] font-extrabold uppercase tracking-wider transition-all"
+                          >
+                            Max
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
                   <button
@@ -1966,6 +2615,154 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                   Ano, smazat
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Account Transfer Modal (Cash <-> Bank) */}
+      <AnimatePresence>
+        {isAccountTransferModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 z-50">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-bento-card-border"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center font-bold">
+                    <ArrowLeftRight className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900">
+                      Přelít peníze mezi účty
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Převod prostředků mezi hotovostí a bankovním účtem
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsAccountTransferModalOpen(false)}
+                  className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAccountTransfer} className="space-y-4">
+                <div className="flex p-1 bg-slate-100 rounded-2xl">
+                  <button
+                    type="button"
+                    onClick={() => setAccountTransferDirection('cash_to_bank')}
+                    className={cn(
+                      "flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5",
+                      accountTransferDirection === 'cash_to_bank' ? "bg-white text-indigo-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                    )}
+                  >
+                    <span>💵 ➔ 🏦 Vklad do banky</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccountTransferDirection('bank_to_cash')}
+                    className={cn(
+                      "flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5",
+                      accountTransferDirection === 'bank_to_cash' ? "bg-white text-amber-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                    )}
+                  >
+                    <span>🏦 ➔ 💵 Výběr z banky</span>
+                  </button>
+                </div>
+
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                  <div className="flex justify-between text-slate-600">
+                    <span>Z zůstatku ({accountTransferDirection === 'cash_to_bank' ? 'Hotovost' : 'Banka'}):</span>
+                    <strong className="font-mono text-slate-900">
+                      {formatCurrency(accountTransferDirection === 'cash_to_bank' ? cashBalance : bankBalance, group.currency)}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Na zůstatek ({accountTransferDirection === 'cash_to_bank' ? 'Banka' : 'Hotovost'}):</span>
+                    <strong className="font-mono text-indigo-700">
+                      {formatCurrency(accountTransferDirection === 'cash_to_bank' ? bankBalance : cashBalance, group.currency)}
+                    </strong>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                    Částka k převodu ({getCurrencySymbol(group.currency)}) <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.01"
+                      required
+                      placeholder="0"
+                      className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl font-mono font-black text-lg text-bento-text-main focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 pr-24"
+                      value={accountTransferAmount}
+                      onChange={(e) => setAccountTransferAmount(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const maxVal = accountTransferDirection === 'cash_to_bank' ? Math.max(0, cashBalance) : Math.max(0, bankBalance);
+                        setAccountTransferAmount(maxVal.toString());
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-[10px] font-extrabold uppercase tracking-wider transition-all"
+                    >
+                      Max
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                    Datum převodu
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-bold text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    value={accountTransferDate}
+                    onChange={(e) => setAccountTransferDate(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                    Poznámka <span className="text-slate-300 font-normal">(volitelné)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={accountTransferDirection === 'cash_to_bank' ? 'např. Vklad tržby z pokladničky na účet' : 'např. Výběr z bankomatu na drobná vydání'}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-bento-card-border rounded-xl font-medium text-xs text-bento-text-main focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    value={accountTransferNote}
+                    onChange={(e) => setAccountTransferNote(e.target.value)}
+                  />
+                </div>
+
+                <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsAccountTransferModalOpen(false)}
+                    className="btn-bento-secondary flex-1 py-3 text-xs font-bold"
+                  >
+                    Zrušit
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isProcessingAccountTransfer}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-blue-600/10 flex items-center justify-center gap-2"
+                  >
+                    <ArrowLeftRight className="w-4 h-4" />
+                    <span>{isProcessingAccountTransfer ? 'Zpracovávám...' : 'Provést převod'}</span>
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}
