@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, writeBatch, deleteDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember } from '../utils';
-import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check, FileSpreadsheet, QrCode } from 'lucide-react';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember, autoDeductExpenseFromEnvelopes } from '../utils';
+import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check, FileSpreadsheet, QrCode, HelpCircle, XCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 import ExportFinanceModal from './ExportFinanceModal';
@@ -40,6 +40,64 @@ export default function DebtList({ group, period }: DebtListProps) {
   const [finePaymentDate, setFinePaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [finePurchaseCategory, setFinePurchaseCategory] = useState('Občerstvení');
   const [finePurchaseRecipient, setFinePurchaseRecipient] = useState('');
+
+  // In-kind fine fulfillment / conversion state
+  const [inKindModalFine, setInKindModalFine] = useState<Fine | null>(null);
+  const [inKindChoice, setInKindChoice] = useState<'yes' | 'no' | null>(null);
+  const [inKindConvertAmount, setInKindConvertAmount] = useState<string>('');
+  const [isInKindSubmitting, setIsInKindSubmitting] = useState<boolean>(false);
+
+  const handleInKindFulfill = async () => {
+    if (!inKindModalFine || isInKindSubmitting) return;
+    setIsInKindSubmitting(true);
+    try {
+      const fineRef = doc(db, `groups/${group.id}/periods/${period.id}/fines`, inKindModalFine.id);
+      await setDoc(fineRef, {
+        paid: true,
+        paidAmount: 0,
+        isFulfilledInKind: true,
+        fulfilledAt: Date.now()
+      }, { merge: true });
+      
+      setInKindModalFine(null);
+      setInKindChoice(null);
+      setInKindConvertAmount('');
+    } catch (error) {
+      console.error(error);
+      handleFirestoreError(error, OperationType.UPDATE, 'fines');
+    } finally {
+      setIsInKindSubmitting(false);
+    }
+  };
+
+  const handleInKindConvertToFinancial = async () => {
+    if (!inKindModalFine || isInKindSubmitting) return;
+    const amount = parseFloat(inKindConvertAmount);
+    if (isNaN(amount) || amount <= 0) return;
+
+    setIsInKindSubmitting(true);
+    try {
+      const fineRef = doc(db, `groups/${group.id}/periods/${period.id}/fines`, inKindModalFine.id);
+      await setDoc(fineRef, {
+        type: 'fixed',
+        amount: amount,
+        unitPrice: amount,
+        isInKind: false,
+        isFulfilledInKind: false,
+        paid: false,
+        paidAmount: 0
+      }, { merge: true });
+
+      setInKindModalFine(null);
+      setInKindChoice(null);
+      setInKindConvertAmount('');
+    } catch (error) {
+      console.error(error);
+      handleFirestoreError(error, OperationType.UPDATE, 'fines');
+    } finally {
+      setIsInKindSubmitting(false);
+    }
+  };
 
   const handleCopyText = (text: string, label: string) => {
     if (!text) return;
@@ -343,6 +401,8 @@ export default function DebtList({ group, period }: DebtListProps) {
           paymentMethod: 'purchase',
           account: 'bank'
         });
+
+        await autoDeductExpenseFromEnvelopes(db, group.id, period.id, amount, 'bank', batch);
       } else {
         const transactionRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
 
@@ -491,6 +551,8 @@ export default function DebtList({ group, period }: DebtListProps) {
           paymentMethod: 'purchase',
           account: 'bank'
         });
+
+        await autoDeductExpenseFromEnvelopes(db, group.id, period.id, payAmount, 'bank', batch);
       } else {
         const transactionRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/transactions`));
 
@@ -697,13 +759,17 @@ export default function DebtList({ group, period }: DebtListProps) {
                   {unpaidFines.length > 0 ? (
                     <div className="space-y-2">
                       {unpaidFines.map(fine => {
-                        const isPartial = (fine.paidAmount || 0) > 0;
-                        const remainingDebt = fine.amount - (fine.paidAmount || 0);
+                        const isInKind = fine.type === 'in_kind' || fine.isInKind;
+                        const isPartial = !isInKind && (fine.paidAmount || 0) > 0;
+                        const remainingDebt = isInKind ? 0 : fine.amount - (fine.paidAmount || 0);
                         return (
                           <div key={fine.id} className="group relative flex justify-between items-center p-3.5 bg-slate-50 rounded-xl border border-bento-card-border transition-all hover:bg-white hover:border-bento-accent/20">
                             <div className="flex flex-col flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-sm text-bento-text-main group-hover:text-bento-accent transition-colors">{fine.reason}</span>
+                                {isInKind && (
+                                  <span className="text-[9px] font-black px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md uppercase tracking-tighter">Věcná / Úkol</span>
+                                )}
                                 {isPartial && (
                                   <span className="text-[9px] font-black px-1.5 py-0.5 bg-rose-100 text-rose-600 rounded-md uppercase tracking-tighter">Částečně</span>
                                 )}
@@ -715,25 +781,49 @@ export default function DebtList({ group, period }: DebtListProps) {
                             </div>
                             <div className="flex items-center gap-3">
                               <div className="flex flex-col items-end">
-                                <span className="font-black text-sm text-rose-600">
-                                  {formatCurrency(remainingDebt, group.currency)}
-                                </span>
-                                {isPartial && <span className="text-[9px] font-bold text-slate-400">Zbývá z {formatCurrency(fine.amount, group.currency)}</span>}
+                                {isInKind ? (
+                                  <span className="font-extrabold text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-lg border border-blue-100">
+                                    Věcný trest
+                                  </span>
+                                ) : (
+                                  <>
+                                    <span className="font-black text-sm text-rose-600">
+                                      {formatCurrency(remainingDebt, group.currency)}
+                                    </span>
+                                    {isPartial && <span className="text-[9px] font-bold text-slate-400">Zbývá z {formatCurrency(fine.amount, group.currency)}</span>}
+                                  </>
+                                )}
                               </div>
                               
                               {!isReadOnly && (
                                 <div className="flex items-center gap-1.5 ml-2">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openFinePaymentModal(fine);
-                                    }}
-                                    className="w-7 h-7 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-all active:scale-95 shadow-2xs shrink-0 flex items-center justify-center cursor-pointer"
-                                    title="Zapsat platbu pro tuto pokutu"
-                                  >
-                                    <CreditCard className="w-3.5 h-3.5 text-white" />
-                                  </button>
+                                  {isInKind ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setInKindModalFine(fine);
+                                        setInKindChoice(null);
+                                        setInKindConvertAmount('');
+                                      }}
+                                      className="w-7 h-7 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-all active:scale-95 shadow-2xs shrink-0 flex items-center justify-center cursor-pointer"
+                                      title="Vyhodnotit věcný trest / úkol"
+                                    >
+                                      <HelpCircle className="w-4 h-4 text-white" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openFinePaymentModal(fine);
+                                      }}
+                                      className="w-7 h-7 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-all active:scale-95 shadow-2xs shrink-0 flex items-center justify-center cursor-pointer"
+                                      title="Zapsat platbu pro tuto pokutu"
+                                    >
+                                      <CreditCard className="w-3.5 h-3.5 text-white" />
+                                    </button>
+                                  )}
                                   <div className="flex items-center gap-0.5 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button 
                                       onClick={(e) => {
@@ -971,9 +1061,13 @@ export default function DebtList({ group, period }: DebtListProps) {
                           </div>
                           <span className={cn(
                             "text-xs font-black tracking-tight",
-                            item.histType === 'payment' ? "text-emerald-600" : "text-slate-400"
+                            item.histType === 'payment' ? "text-emerald-600" : ((item as any).type === 'in_kind' || (item as any).isFulfilledInKind) ? "text-blue-600" : "text-slate-400"
                           )}>
-                            {item.histType === 'payment' ? '+' : ''}{formatCurrency(item.amount, group.currency)}
+                            {item.histType === 'payment'
+                              ? `+${formatCurrency(item.amount, group.currency)}`
+                              : ((item as any).type === 'in_kind' || (item as any).isFulfilledInKind)
+                                ? 'Splněno věcně'
+                                : formatCurrency(item.amount, group.currency)}
                           </span>
                         </div>
                       ))}
@@ -1600,6 +1694,130 @@ export default function DebtList({ group, period }: DebtListProps) {
                   Potvrdit úhradu pokuty
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* In-Kind Fine Modal (Věcný trest) */}
+      <AnimatePresence>
+        {inKindModalFine && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 space-y-5"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                    <HelpCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-bento-text-main">Vyhodnocení věcné pokuty</h3>
+                    <p className="text-xs text-bento-text-muted font-medium truncate max-w-[220px]">{inKindModalFine.reason}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInKindModalFine(null);
+                    setInKindChoice(null);
+                    setInKindConvertAmount('');
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-3.5 bg-slate-50 rounded-2xl space-y-1 text-xs">
+                <div className="text-slate-500 font-medium">Člen: <span className="font-bold text-slate-800">{selectedMember?.name}</span></div>
+                <div className="text-slate-500 font-medium">Zapsáno: <span className="font-bold text-slate-800">{new Date(inKindModalFine.createdAt).toLocaleDateString('cs-CZ')}</span></div>
+                <div className="text-slate-500 font-medium">Detail / úkol: <span className="font-bold text-blue-700">{inKindModalFine.reason}</span></div>
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-bento-text-main block">Přinesl či splnil věcný trest?</label>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setInKindChoice('yes')}
+                    className={cn(
+                      "p-4 rounded-2xl border-2 font-black text-sm flex flex-col items-center gap-2 transition-all cursor-pointer",
+                      inKindChoice === 'yes'
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-700 shadow-sm"
+                        : "border-slate-100 bg-slate-50 text-slate-600 hover:border-slate-200"
+                    )}
+                  >
+                    <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+                    <span>Ano (splněno)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setInKindChoice('no')}
+                    className={cn(
+                      "p-4 rounded-2xl border-2 font-black text-sm flex flex-col items-center gap-2 transition-all cursor-pointer",
+                      inKindChoice === 'no'
+                        ? "border-amber-500 bg-amber-50 text-amber-700 shadow-sm"
+                        : "border-slate-100 bg-slate-50 text-slate-600 hover:border-slate-200"
+                    )}
+                  >
+                    <XCircle className="w-6 h-6 text-amber-600" />
+                    <span>Ne (převést na Kč)</span>
+                  </button>
+                </div>
+              </div>
+
+              {inKindChoice === 'yes' && (
+                <div className="p-4 bg-emerald-50/70 border border-emerald-100 rounded-2xl space-y-3">
+                  <p className="text-xs text-emerald-800 font-medium leading-relaxed">
+                    Pokuta bude označena jako splněná a přesune se do historie splacených pokut.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={isInKindSubmitting}
+                    onClick={handleInKindFulfill}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                  >
+                    {isInKindSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                    Potvrdit splnění trestu
+                  </button>
+                </div>
+              )}
+
+              {inKindChoice === 'no' && (
+                <div className="p-4 bg-amber-50/70 border border-amber-100 rounded-2xl space-y-3">
+                  <p className="text-xs text-amber-900 font-medium leading-relaxed">
+                    Věcný trest nebyl splněn. Pokuta se změní na běžnou finanční pokutu. Napište kolik peněz bude člen platit:
+                  </p>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-amber-800 block mb-1">
+                      Částka v {getCurrencySymbol(group.currency)}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Např. 50"
+                      className="w-full px-4 py-2.5 bg-white border border-amber-200 rounded-xl font-bold text-base focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      value={inKindConvertAmount}
+                      onChange={(e) => setInKindConvertAmount(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isInKindSubmitting || !inKindConvertAmount || parseFloat(inKindConvertAmount) <= 0}
+                    onClick={handleInKindConvertToFinancial}
+                    className="w-full py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md shadow-amber-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                  >
+                    {isInKindSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    Převést na finanční pokutu ({inKindConvertAmount || 0} {getCurrencySymbol(group.currency)})
+                  </button>
+                </div>
+              )}
             </motion.div>
           </div>
         )}

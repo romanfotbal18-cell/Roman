@@ -156,8 +156,11 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       let expense = 0;
       
       unique.forEach(t => {
-        if (t.amount > 0) income += t.amount;
-        else expense += t.amount;
+        const isTransfer = t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId;
+        if (!isTransfer) {
+          if (t.amount > 0) income += t.amount;
+          else expense += t.amount;
+        }
       });
       
       setTransactions(unique);
@@ -165,7 +168,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
         ...prev,
         totalIncome: income,
         totalExpense: Math.abs(expense),
-        balance: income + expense
+        balance: unique.reduce((sum, t) => sum + t.amount, 0)
       }));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, transactionsPath);
@@ -278,7 +281,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const incomeBreakdown = useMemo(() => {
     const categories: Record<string, number> = {};
     transactions
-      .filter(t => t.amount > 0)
+      .filter(t => t.amount > 0 && !(t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId))
       .forEach(t => {
         const key = t.category || 'Jiné';
         categories[key] = (categories[key] || 0) + t.amount;
@@ -297,7 +300,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const expenseBreakdown = useMemo(() => {
     const categories: Record<string, number> = {};
     transactions
-      .filter(t => t.amount < 0)
+      .filter(t => t.amount < 0 && !(t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId))
       .forEach(t => {
         const key = t.category || 'Jiné';
         categories[key] = (categories[key] || 0) + Math.abs(t.amount);
@@ -381,9 +384,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const showCategoryDetails = (category: string | number, type: 'income' | 'expense') => {
     const filtered = transactions
       .filter(t => {
+        const isTransfer = t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId;
         const tCat = t.category || 'Jiné';
         const tType = t.amount > 0 ? 'income' : 'expense';
-        return tCat === String(category) && tType === type;
+        return !isTransfer && tCat === String(category) && tType === type;
       })
       .sort((a, b) => b.createdAt - a.createdAt); // Show newest at top
     setSelectedCategoryTrans({ name: String(category), transactions: filtered });
@@ -474,11 +478,6 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       .filter(e => (e.isImportant || e.isBirthday) && e.date !== today)
       .slice(0, 2);
   }, [allUpcomingEvents]);
-
-  const hasDeficit = totalInEnvelopes > 0 && stats.balance < totalInEnvelopes;
-  const deficitAmount = hasDeficit ? totalInEnvelopes - Math.max(0, stats.balance) : 0;
-  const effectiveTotalInEnvelopes = Math.min(totalInEnvelopes, Math.max(0, stats.balance));
-  const envelopeCoverageRatio = totalInEnvelopes > 0 ? Math.min(1, Math.max(0, stats.balance) / totalInEnvelopes) : 1;
 
   const freeCash = useMemo(() => {
     return Math.max(0, stats.balance - totalInEnvelopes);
@@ -1025,31 +1024,19 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                     Vyčleněné úspory celkem
                   </span>
                   <span className="font-mono font-black text-purple-900 text-sm">
-                    {formatCurrency(effectiveTotalInEnvelopes, group.currency)}
+                    {formatCurrency(totalInEnvelopes, group.currency)}
                   </span>
-                  {hasDeficit && (
-                    <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                      (Čerpáno {formatCurrency(deficitAmount, group.currency)} z obálek)
-                    </span>
-                  )}
                 </div>
                 <span className="text-[10px] font-medium text-slate-500">
-                  Hotovost: <strong className="text-slate-800 font-mono font-black">{formatCurrency(freeCash, group.currency)}</strong>
+                  Volné peníze: <strong className="text-slate-800 font-mono font-black">{formatCurrency(freeCash, group.currency)}</strong>
                 </span>
               </div>
 
-              {hasDeficit && (
-                <div className="p-2 bg-amber-50/80 border border-amber-200/80 rounded-xl text-[10px] font-semibold text-amber-800 flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>Hotovost je na 0 Kč. Pokles zůstatku pokladny ({formatCurrency(deficitAmount, group.currency)}) je čerpán z úspor v obálkách.</span>
-                </div>
-              )}
-
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
                 {envelopes.map((env) => {
-                  const effectiveAmount = envelopeCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * envelopeCoverageRatio)) : env.amount;
+                  const envType = env.type || 'virtual';
                   const hasTarget = env.targetAmount && env.targetAmount > 0;
-                  const percent = hasTarget ? Math.min(100, Math.round((effectiveAmount / env.targetAmount!) * 100)) : 0;
+                  const percent = hasTarget ? Math.min(100, Math.round((env.amount / env.targetAmount!) * 100)) : 0;
                   return (
                     <div
                       key={env.id}
@@ -1057,16 +1044,16 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       className="p-3 bg-slate-50 hover:bg-purple-50/50 border border-slate-200 hover:border-purple-200 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-1.5"
                     >
                       <div className="flex items-start justify-between gap-1">
-                        <span className="text-xs font-extrabold text-slate-800 line-clamp-1">{env.name}</span>
+                        <div>
+                          <span className="text-xs font-extrabold text-slate-800 line-clamp-1">{env.name}</span>
+                          <span className="text-[9px] font-bold text-slate-400 block -mt-0.5">
+                            {envType === 'cash' ? '💵 Hotovostní' : envType === 'bank' ? '🏦 Na účtu' : '🌐 Klasická'}
+                          </span>
+                        </div>
                         <div className="text-right shrink-0">
                           <span className="text-xs font-mono font-black text-purple-700 block">
-                            {formatCurrency(effectiveAmount, group.currency)}
+                            {formatCurrency(env.amount, group.currency)}
                           </span>
-                          {envelopeCoverageRatio < 1 && (
-                            <span className="text-[8px] font-semibold text-slate-400 block -mt-0.5">
-                              (nom. {formatCurrency(env.amount, group.currency)})
-                            </span>
-                          )}
                         </div>
                       </div>
 
@@ -1087,6 +1074,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                         <p className="text-[10px] text-slate-400 line-clamp-1 italic">
                           {env.note || 'Volná obálka'}
                         </p>
+                      )}
+
+                      {env.targetDate && (
+                        <div className="text-[9px] font-semibold text-indigo-600 pt-0.5">
+                          📅 Do {new Date(env.targetDate).toLocaleDateString('cs-CZ')}
+                        </div>
                       )}
                     </div>
                   );
@@ -1360,12 +1353,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           <p className="text-base font-black text-blue-600">{formatCurrency(stats.balance, group.currency)}</p>
                         </div>
                         <div className="p-3.5 bg-purple-50/50 border border-purple-100 rounded-2xl">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-purple-600 block mb-0.5">Hotovost</span>
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-purple-600 block mb-0.5">Volné peníze</span>
                           <p className="text-base font-black text-purple-700">{formatCurrency(freeCash, group.currency)}</p>
                           <span className="text-[9px] text-purple-500 font-medium block mt-0.5">
-                            {hasDeficit 
-                              ? `Čerpáno ${formatCurrency(deficitAmount, group.currency)} z úspor v obálkách (drží 0 Kč)`
-                              : `Po odečtení ${formatCurrency(totalInEnvelopes, group.currency)} v obálkách`}
+                            Po odečtení {formatCurrency(totalInEnvelopes, group.currency)} v obálkách
                           </span>
                         </div>
                       </div>
@@ -1382,32 +1373,21 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                         </div>
                         <div className="text-right">
                           <span className="text-xs font-mono font-bold text-purple-700 block">
-                            Skutečně v obálkách: {formatCurrency(effectiveTotalInEnvelopes, group.currency)}
+                            Celkem v obálkách: {formatCurrency(totalInEnvelopes, group.currency)}
                           </span>
-                          {hasDeficit && (
-                            <span className="text-[9px] font-semibold text-slate-400 block">
-                              (nominálně {formatCurrency(totalInEnvelopes, group.currency)})
-                            </span>
-                          )}
                         </div>
                       </div>
 
                       {envelopes.length > 0 ? (
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
                           {envelopes.map(env => {
-                            const effectiveAmount = envelopeCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * envelopeCoverageRatio)) : env.amount;
                             return (
                               <div key={env.id} className="p-2.5 bg-purple-50/40 border border-purple-100 rounded-xl flex flex-col justify-between">
                                 <span className="text-[11px] font-extrabold text-slate-800 truncate" title={env.name}>{env.name}</span>
                                 <div className="mt-1">
                                   <span className="text-xs font-mono font-black text-purple-700 block">
-                                    {formatCurrency(effectiveAmount, group.currency)}
+                                    {formatCurrency(env.amount, group.currency)}
                                   </span>
-                                  {envelopeCoverageRatio < 1 && (
-                                    <span className="text-[8px] text-slate-400 font-semibold block">
-                                      (nom. {formatCurrency(env.amount, group.currency)})
-                                    </span>
-                                  )}
                                 </div>
                               </div>
                             );

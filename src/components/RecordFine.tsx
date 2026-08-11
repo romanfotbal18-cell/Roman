@@ -33,6 +33,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   const [selectedTemplate, setSelectedTemplate] = useState<FineTemplate | null>(null);
   const [customReason, setCustomReason] = useState('');
   const [customAmount, setCustomAmount] = useState('');
+  const [customIsInKind, setCustomIsInKind] = useState(false);
   const [dynamicValue, setDynamicValue] = useState('');
   const [fineCount, setFineCount] = useState(1);
 
@@ -203,9 +204,10 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   };
 
   const calculateAmount = () => {
-    if (fineTab === 'custom') return (parseFloat(customAmount) || 0) * fineCount;
+    if (fineTab === 'custom') return customIsInKind ? 0 : (parseFloat(customAmount) || 0) * fineCount;
     if (fineTab === 'template') {
       if (!selectedTemplate) return 0;
+      if (selectedTemplate.type === 'in_kind') return 0;
       if (selectedTemplate.type === 'dynamic') {
         const val = parseFloat(dynamicValue) || 0;
         return val * selectedTemplate.amount;
@@ -215,6 +217,11 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
     return 0;
   };
 
+  const isCurrentInKind = (fineTab === 'custom' && customIsInKind) || (fineTab === 'template' && selectedTemplate?.type === 'in_kind');
+  const isValidSelection = isCurrentInKind
+    ? (fineTab === 'custom' ? customReason.trim().length > 0 : !!selectedTemplate)
+    : (calculateAmount() > 0 && (fineTab === 'custom' ? customReason.trim().length > 0 : !!selectedTemplate));
+
   const handleRecord = async () => {
     if (selectedMemberIds.length === 0 || isSubmitting) return;
     
@@ -223,25 +230,43 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
     let q = 1;
     let up = 0;
     let u = '';
+    let isInKind = false;
+    let fineType: 'fixed' | 'dynamic' | 'in_kind' = 'fixed';
     
     if (fineTab === 'custom') {
-      reason = fineCount > 1 ? `${customReason} ${fineCount}x` : customReason;
-      q = fineCount;
-      up = parseFloat(customAmount) || 0;
+      if (customIsInKind) {
+        isInKind = true;
+        fineType = 'in_kind';
+        reason = fineCount > 1 ? `${customReason} (${fineCount}x)` : customReason;
+        q = fineCount;
+        u = customReason;
+      } else {
+        reason = fineCount > 1 ? `${customReason} ${fineCount}x` : customReason;
+        q = fineCount;
+        up = parseFloat(customAmount) || 0;
+      }
     } else if (fineTab === 'template' && selectedTemplate) {
-      if (selectedTemplate.type === 'dynamic') {
+      if (selectedTemplate.type === 'in_kind') {
+        isInKind = true;
+        fineType = 'in_kind';
+        reason = fineCount > 1 ? `${selectedTemplate.name} (${fineCount}x)` : selectedTemplate.name;
+        q = fineCount;
+        u = selectedTemplate.itemOrTask || selectedTemplate.unit || selectedTemplate.name;
+      } else if (selectedTemplate.type === 'dynamic') {
+        fineType = 'dynamic';
         reason = `${selectedTemplate.name} (${dynamicValue} ${selectedTemplate.unit})`;
         q = parseFloat(dynamicValue) || 0;
         up = selectedTemplate.amount;
         u = selectedTemplate.unit || '';
       } else {
+        fineType = 'fixed';
         reason = fineCount > 1 ? `${selectedTemplate.name} ${fineCount}x` : selectedTemplate.name;
         q = fineCount;
         up = selectedTemplate.amount;
       }
     }
 
-    if (!reason || amount <= 0) return;
+    if (!reason || (!isInKind && amount <= 0)) return;
 
     setIsSubmitting(true);
     try {
@@ -253,7 +278,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
         batch.set(fineRef, {
           memberId,
           reason,
-          amount,
+          amount: isInKind ? 0 : amount,
           paidAmount: 0,
           paid: false,
           periodId: period.id,
@@ -261,7 +286,10 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
           templateId: selectedTemplate?.id || null,
           quantity: q,
           unitPrice: up,
-          unit: u
+          unit: u,
+          type: fineType,
+          isInKind: isInKind,
+          itemOrTask: u
         });
       });
 
@@ -682,11 +710,25 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                             {template.amount} {getCurrencySymbol(group.currency)} / {template.unit}
                           </span>
                         )}
+                        {template.type === 'in_kind' && (
+                          <span className={cn("text-[10px] font-medium block mt-0.5", selectedTemplate?.id === template.id ? "text-blue-300" : "text-blue-600 font-bold")}>
+                            {template.quantity || 1}x {template.itemOrTask || template.unit || 'úkol/věc'}
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="text-right">
-                      <span className="font-bold text-[11px] whitespace-nowrap">
-                        {template.type === 'fixed' ? `${template.amount} ${getCurrencySymbol(group.currency)}` : 'Dynamická'}
+                    <div className="text-right shrink-0">
+                      <span className={cn(
+                        "font-bold text-[11px] whitespace-nowrap px-2 py-0.5 rounded-md",
+                        template.type === 'in_kind'
+                          ? (selectedTemplate?.id === template.id ? "bg-blue-500/30 text-blue-200" : "bg-blue-100 text-blue-700")
+                          : ""
+                      )}>
+                        {template.type === 'fixed'
+                          ? `${template.amount} ${getCurrencySymbol(group.currency)}`
+                          : template.type === 'in_kind'
+                            ? 'Věcná pokuta'
+                            : 'Dynamická'}
                       </span>
                     </div>
                   </button>
@@ -699,7 +741,40 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                   animate={{ opacity: 1, height: 'auto' }}
                   className="p-4 bg-bento-accent/5 border border-bento-accent/10 rounded-xl space-y-4 mt-2"
                 >
-                  {selectedTemplate.type === 'dynamic' ? (
+                  {selectedTemplate.type === 'in_kind' ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Věcný trest / úkol</span>
+                        <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-100">Bezplatná pokuta (0 Kč)</span>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-bento-accent uppercase tracking-widest">Množství (kolikrát zapsat?)</label>
+                        <div className="flex items-center gap-3">
+                          <button 
+                            type="button"
+                            onClick={() => setFineCount(Math.max(1, fineCount - 1))}
+                            className="w-10 h-10 rounded-lg bg-white border border-bento-accent/20 flex items-center justify-center text-bento-accent hover:bg-bento-accent hover:text-white transition-all"
+                          >
+                            <X className="w-4 h-4 rotate-45 transform" />
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            className="w-full px-4 py-2 bg-white border border-bento-accent/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-center text-sm"
+                            value={fineCount}
+                            onChange={(e) => setFineCount(Math.max(1, parseInt(e.target.value) || 1))}
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => setFineCount(fineCount + 1)}
+                            className="w-10 h-10 rounded-lg bg-white border border-bento-accent/20 flex items-center justify-center text-bento-accent hover:bg-bento-accent hover:text-white transition-all"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : selectedTemplate.type === 'dynamic' ? (
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-bento-accent uppercase tracking-widest">Kolikrát? ({selectedTemplate.unit})</label>
                       <div className="relative">
@@ -718,6 +793,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                       <label className="text-[10px] font-black text-bento-accent uppercase tracking-widest">Počet (kolikrát zapsat?)</label>
                       <div className="flex items-center gap-3">
                         <button 
+                          type="button"
                           onClick={() => setFineCount(Math.max(1, fineCount - 1))}
                           className="w-10 h-10 rounded-lg bg-white border border-bento-accent/20 flex items-center justify-center text-bento-accent hover:bg-bento-accent hover:text-white transition-all"
                         >
@@ -731,6 +807,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                           onChange={(e) => setFineCount(Math.max(1, parseInt(e.target.value) || 1))}
                         />
                         <button 
+                          type="button"
                           onClick={() => setFineCount(fineCount + 1)}
                           className="w-10 h-10 rounded-lg bg-white border border-bento-accent/20 flex items-center justify-center text-bento-accent hover:bg-bento-accent hover:text-white transition-all"
                         >
@@ -744,40 +821,80 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
             </div>
           ) : fineTab === 'custom' ? (
             <div className="space-y-4">
+              {/* Type selection: Finanční vs Věcný trest */}
+              <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setCustomIsInKind(false)}
+                  className={cn(
+                    "flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all",
+                    !customIsInKind ? "bg-white text-bento-text-main shadow-xs" : "text-bento-text-muted hover:text-bento-text-main"
+                  )}
+                >
+                  Finanční pokuta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomIsInKind(true)}
+                  className={cn(
+                    "flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all",
+                    customIsInKind ? "bg-blue-600 text-white shadow-xs" : "text-bento-text-muted hover:text-blue-600"
+                  )}
+                >
+                  Věcný trest / úkol
+                </button>
+              </div>
+
               <div>
-                <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Důvod pokuty</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">
+                  {customIsInKind ? 'Věc / Úkol / Prohřešek' : 'Důvod pokuty'}
+                </label>
                 <input
                   type="text"
-                  placeholder="Např. Pojmenování prohřešku..."
+                  placeholder={customIsInKind ? "Marlenka, přinést kávu, úklid..." : "Např. Pojmenování prohřešku..."}
                   className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 text-sm font-medium"
                   value={customReason}
                   onChange={(e) => setCustomReason(e.target.value)}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+
+              {customIsInKind ? (
                 <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Částka ({getCurrencySymbol(group.currency)}/ks)</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Množství</label>
                   <input
                     type="number"
-                    placeholder="0"
-                    className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-xl"
-                    value={customAmount}
-                    onChange={(e) => setCustomAmount(e.target.value)}
+                    min="1"
+                    className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-xl text-center"
+                    value={fineCount}
+                    onChange={(e) => setFineCount(Math.max(1, parseInt(e.target.value) || 1))}
                   />
                 </div>
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Počet</label>
-                  <div className="flex items-center gap-2">
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Částka ({getCurrencySymbol(group.currency)}/ks)</label>
                     <input
                       type="number"
-                      min="1"
-                      className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-xl text-center"
-                      value={fineCount}
-                      onChange={(e) => setFineCount(Math.max(1, parseInt(e.target.value) || 1))}
+                      placeholder="0"
+                      className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-xl"
+                      value={customAmount}
+                      onChange={(e) => setCustomAmount(e.target.value)}
                     />
                   </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block px-1 mb-1.5">Počet</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        className="w-full px-4 py-3 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-xl text-center"
+                        value={fineCount}
+                        onChange={(e) => setFineCount(Math.max(1, parseInt(e.target.value) || 1))}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           ) : (
             /* Automatic Recurring Fine View */
@@ -1145,13 +1262,32 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
             <div className="pt-6 border-t border-bento-card-border">
               <div className="flex justify-between items-center mb-6">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Výsledek</p>
-                  <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} {getCurrencySymbol(group.currency)}</p>
-                  <p className="text-[10px] font-medium text-bento-text-muted mt-2">pro každého z {selectedMemberIds.length} členů</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">
+                    {isCurrentInKind ? 'Výsledek (Věcná pokuta)' : 'Výsledek'}
+                  </p>
+                  {isCurrentInKind ? (
+                    <div>
+                      <p className="text-2xl font-black text-blue-600 tracking-tight leading-none">Bezplatná (0 {getCurrencySymbol(group.currency)})</p>
+                      <p className="text-[10px] font-medium text-bento-text-muted mt-2">
+                        {fineTab === 'custom' ? (customReason || 'Věcný trest') : (selectedTemplate?.name || 'Věcný trest')} ({fineCount}x) pro každého z {selectedMemberIds.length} členů
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-3xl font-black text-rose-500 tracking-tighter leading-none">{calculateAmount()} {getCurrencySymbol(group.currency)}</p>
+                      <p className="text-[10px] font-medium text-bento-text-muted mt-2">pro každého z {selectedMemberIds.length} členů</p>
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">Celkem</p>
-                  <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} {getCurrencySymbol(group.currency)}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-bento-text-muted mb-1">
+                    {isCurrentInKind ? 'Typ pokuty' : 'Celkem'}
+                  </p>
+                  {isCurrentInKind ? (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-700 font-black text-xs rounded-lg inline-block">Věcná / Úkol</span>
+                  ) : (
+                    <p className="text-lg font-bold text-bento-text-main tracking-tight">{calculateAmount() * selectedMemberIds.length} {getCurrencySymbol(group.currency)}</p>
+                  )}
                 </div>
               </div>
 
@@ -1164,11 +1300,15 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
 
               <button
                 onClick={handleRecord}
-                disabled={isReadOnly || selectedMemberIds.length === 0 || calculateAmount() <= 0 || isSubmitting}
+                disabled={isReadOnly || selectedMemberIds.length === 0 || !isValidSelection || isSubmitting}
                 className="btn-bento-primary w-full py-4 text-sm font-bold shadow-xl shadow-bento-accent/10 disabled:opacity-40"
               >
                 {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                {isReadOnly ? 'Zápis zakázán (Čtenář)' : 'Zapsat do systému'}
+                {isReadOnly 
+                  ? 'Zápis zakázán (Čtenář)' 
+                  : isCurrentInKind 
+                    ? `Zapsat věcnou pokutu (0 Kč)` 
+                    : 'Zapsat do systému'}
               </button>
             </div>
           )}

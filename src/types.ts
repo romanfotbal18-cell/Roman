@@ -59,8 +59,10 @@ export interface FineTemplate {
   id: string;
   name: string;
   amount: number;
-  type: 'fixed' | 'dynamic';
+  type: 'fixed' | 'dynamic' | 'in_kind';
   unit?: string;
+  quantity?: number;
+  itemOrTask?: string;
   groupId: string;
   order: number;
 }
@@ -94,6 +96,11 @@ export interface Fine {
   quantity?: number;
   unitPrice?: number;
   unit?: string;
+  itemOrTask?: string;
+  type?: 'fixed' | 'dynamic' | 'in_kind';
+  isInKind?: boolean;
+  isFulfilledInKind?: boolean;
+  fulfilledAt?: number;
   recurringFineId?: string;
 }
 

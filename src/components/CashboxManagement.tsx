@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, orderBy, getDoc, writeBatch, getDocs, where, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, Period, Transaction, OperationType, Fine, Payment, Member, Envelope } from '../types';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled, autoDeductExpenseFromEnvelopes } from '../utils';
 import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen, FileSpreadsheet, Building2, Landmark, CreditCard, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ExportFinanceModal from './ExportFinanceModal';
@@ -364,6 +364,11 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         }
       }
 
+      if (type === 'expense') {
+        const editingOldAmt = editingTransaction ? Math.abs(editingTransaction.amount) : 0;
+        await autoDeductExpenseFromEnvelopes(db, group.id, period.id, numAmount, accountType, batch, editingOldAmt);
+      }
+
       await batch.commit();
 
       if (affectedMemberId) {
@@ -533,37 +538,26 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
   const bankBalance = transactions.reduce((sum, t) => getTransactionAccount(t) === 'bank' ? sum + t.amount : sum, 0);
   const totalBalance = cashBalance + bankBalance;
 
-  const virtualEnvelopesTotal = envelopes.filter(e => e.type === 'virtual' || !e.type).reduce((sum, e) => sum + e.amount, 0);
-  const cashEnvelopesTotal = envelopes.filter(e => e.type === 'cash').reduce((sum, e) => sum + e.amount, 0);
-  const bankEnvelopesTotal = envelopes.filter(e => e.type === 'bank').reduce((sum, e) => sum + e.amount, 0);
-  const totalInEnvelopes = virtualEnvelopesTotal + cashEnvelopesTotal + bankEnvelopesTotal;
+  const explicitVirtualTotal = envelopes.filter(e => e.type === 'virtual' || !e.type).reduce((sum, e) => sum + e.amount, 0);
+  const explicitCashEnvelopes = envelopes.filter(e => e.type === 'cash').reduce((sum, e) => sum + e.amount, 0);
+  const explicitBankEnvelopes = envelopes.filter(e => e.type === 'bank').reduce((sum, e) => sum + e.amount, 0);
+
+  // Allocate unassigned/virtual envelopes first from Bank balance, then from Cash balance
+  const bankCapacityForVirtual = Math.max(0, bankBalance - explicitBankEnvelopes);
+  const allocatedBankForVirtual = Math.min(bankCapacityForVirtual, explicitVirtualTotal);
+  const remainingVirtualAfterBank = explicitVirtualTotal - allocatedBankForVirtual;
+
+  const cashCapacityForVirtual = Math.max(0, cashBalance - explicitCashEnvelopes);
+  const allocatedCashForVirtual = Math.min(cashCapacityForVirtual, remainingVirtualAfterBank);
+
+  const bankEnvelopesTotal = explicitBankEnvelopes + allocatedBankForVirtual;
+  const cashEnvelopesTotal = explicitCashEnvelopes + allocatedCashForVirtual;
+  const virtualEnvelopesTotal = explicitVirtualTotal - allocatedBankForVirtual - allocatedCashForVirtual;
+  const totalInEnvelopes = explicitVirtualTotal + explicitCashEnvelopes + explicitBankEnvelopes;
 
   const freeCashForCash = Math.max(0, cashBalance - cashEnvelopesTotal);
   const freeBankForBank = Math.max(0, bankBalance - bankEnvelopesTotal);
   const freeTotalForVirtual = Math.max(0, totalBalance - totalInEnvelopes);
-
-  // Coverage ratios per envelope type so cash and bank deficits don't spill over to each other
-  const cashCoverageRatio = cashEnvelopesTotal > 0 ? Math.min(1, Math.max(0, cashBalance) / cashEnvelopesTotal) : 1;
-  const bankCoverageRatio = bankEnvelopesTotal > 0 ? Math.min(1, Math.max(0, bankBalance) / bankEnvelopesTotal) : 1;
-  const virtualCoverageRatio = totalInEnvelopes > 0 ? Math.min(1, Math.max(0, totalBalance) / totalInEnvelopes) : 1;
-
-  const getEffectiveEnvelopeAmount = (env: Envelope) => {
-    const type = env.type || 'virtual';
-    if (type === 'cash') {
-      return cashCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * cashCoverageRatio)) : env.amount;
-    }
-    if (type === 'bank') {
-      return bankCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * bankCoverageRatio)) : env.amount;
-    }
-    return virtualCoverageRatio < 1 ? Math.max(0, Math.floor(env.amount * virtualCoverageRatio)) : env.amount;
-  };
-
-  const getEnvelopeCoverageRatio = (env: Envelope) => {
-    const type = env.type || 'virtual';
-    if (type === 'cash') return cashCoverageRatio;
-    if (type === 'bank') return bankCoverageRatio;
-    return virtualCoverageRatio;
-  };
 
   const getRemainingDaysText = (targetDateStr?: string) => {
     if (!targetDateStr) return null;
@@ -577,11 +571,6 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     if (diffDays === 1) return 'Zbývá 1 den';
     return `Zbývá ${diffDays} dní`;
   };
-
-  const hasDeficit = totalInEnvelopes > 0 && totalBalance < totalInEnvelopes;
-  const deficitAmount = hasDeficit ? totalInEnvelopes - Math.max(0, totalBalance) : 0;
-  const effectiveTotalInEnvelopes = Math.min(totalInEnvelopes, Math.max(0, totalBalance));
-  const freeCash = Math.max(0, cashBalance - cashEnvelopesTotal);
 
   const handleOpenCreateEnvelope = () => {
     setEditingEnvelope(null);
@@ -616,26 +605,32 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     const effectiveType = showSplitAccounts ? envelopeType : 'virtual';
     const targetDateValue = envelopeTargetDate.trim() || null;
 
-    let availableLimit = freeTotalForVirtual;
-    let limitLabel = "celkového zůstatku";
+    const currentEnvAmt = editingEnvelope ? editingEnvelope.amount : 0;
+    const currentType = editingEnvelope ? (editingEnvelope.type || 'virtual') : effectiveType;
+    const currentTotalUnallocated = totalBalance - totalInEnvelopes + currentEnvAmt;
+
+    let availableAccountLimit = currentTotalUnallocated;
+    let limitLabel = "celkového zůstatku pokladny";
 
     if (effectiveType === 'cash') {
-      availableLimit = freeCashForCash + (editingEnvelope && editingEnvelope.type === 'cash' ? editingEnvelope.amount : 0);
+      const currentCashUnallocated = cashBalance - cashEnvelopesTotal + (currentType === 'cash' ? currentEnvAmt : 0);
+      availableAccountLimit = Math.min(currentTotalUnallocated, currentCashUnallocated);
       limitLabel = "fyzické hotovosti";
     } else if (effectiveType === 'bank') {
-      availableLimit = freeBankForBank + (editingEnvelope && editingEnvelope.type === 'bank' ? editingEnvelope.amount : 0);
+      const currentBankUnallocated = bankBalance - bankEnvelopesTotal + (currentType === 'bank' ? currentEnvAmt : 0);
+      availableAccountLimit = Math.min(currentTotalUnallocated, currentBankUnallocated);
       limitLabel = "peněz na účtu";
     } else {
-      availableLimit = freeTotalForVirtual + (editingEnvelope ? editingEnvelope.amount : 0);
-      limitLabel = "celkového zůstatku";
+      availableAccountLimit = currentTotalUnallocated;
+      limitLabel = "celkového zůstatku pokladny";
+    }
+
+    if (initialAmt > availableAccountLimit) {
+      alert(`Nemůžete vyčlenit do obálky více, než je k dispozici. Dostupné v ${limitLabel}: ${formatCurrency(Math.max(0, availableAccountLimit), group.currency)}.`);
+      return;
     }
 
     if (editingEnvelope) {
-      const diff = initialAmt - editingEnvelope.amount;
-      if (diff > 0 && diff > availableLimit) {
-        alert(`Není dostatek prostředků v ${limitLabel} pro navýšení o ${formatCurrency(diff, group.currency)}. Dostupné: ${formatCurrency(availableLimit, group.currency)}.`);
-        return;
-      }
       setIsSavingEnvelope(true);
       try {
         const envRef = doc(db, `groups/${group.id}/periods/${period.id}/envelopes`, editingEnvelope.id);
@@ -655,10 +650,6 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         setIsSavingEnvelope(false);
       }
     } else {
-      if (initialAmt > availableLimit) {
-        alert(`Není dostatek prostředků v ${limitLabel} pro vklad ${formatCurrency(initialAmt, group.currency)}. Dostupné: ${formatCurrency(availableLimit, group.currency)}.`);
-        return;
-      }
       setIsSavingEnvelope(true);
       try {
         const envelopesPath = `groups/${group.id}/periods/${period.id}/envelopes`;
@@ -708,20 +699,24 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
     if (isNaN(amt) || amt <= 0) return;
 
     const envType = selectedTransferEnvelope.type || 'virtual';
-    let availableFunds = freeTotalForVirtual;
+    const availableTotalUnallocated = totalBalance - totalInEnvelopes;
+
+    let availableAccountLimit = availableTotalUnallocated;
     let limitName = "celkové pokladny";
 
     if (envType === 'cash') {
-      availableFunds = freeCashForCash;
+      const availableCashUnallocated = cashBalance - cashEnvelopesTotal;
+      availableAccountLimit = Math.min(availableTotalUnallocated, availableCashUnallocated);
       limitName = "fyzické hotovosti";
     } else if (envType === 'bank') {
-      availableFunds = freeBankForBank;
+      const availableBankUnallocated = bankBalance - bankEnvelopesTotal;
+      availableAccountLimit = Math.min(availableTotalUnallocated, availableBankUnallocated);
       limitName = "bankovního účtu";
     }
 
     if (transferType === 'deposit') {
-      if (amt > availableFunds) {
-        alert(`Nelze vložit více, než je dostupné v ${limitName} (${formatCurrency(availableFunds, group.currency)}).`);
+      if (amt > availableAccountLimit) {
+        alert(`Nelze vložit do obálky více, než je k dispozici v ${limitName} (${formatCurrency(Math.max(0, availableAccountLimit), group.currency)}).`);
         return;
       }
     } else {
@@ -938,37 +933,22 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
       ) : showEnvelopes ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           {/* Available Cash Card */}
-          <div className={cn(
-            "bento-card p-6 flex flex-col justify-between shadow-sm border transition-all",
-            hasDeficit ? "bg-amber-50/70 border-amber-300" : "bg-white border-bento-card-border"
-          )}>
+          <div className="bento-card p-6 flex flex-col justify-between shadow-sm border bg-white border-bento-card-border">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <div className={cn(
-                  "w-10 h-10 rounded-2xl flex items-center justify-center font-bold",
-                  hasDeficit ? "bg-amber-500 text-white" : "bg-indigo-50 text-indigo-600"
-                )}>
+                <div className="w-10 h-10 rounded-2xl flex items-center justify-center font-bold bg-indigo-50 text-indigo-600">
                   <Wallet className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">Hotovost</p>
-                  <p className="text-[11px] font-semibold text-slate-500">Fyzická hotovost</p>
+                  <p className="text-xs font-black text-bento-text-main uppercase tracking-[0.12em]">Volná hotovost</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">mimo obálky</p>
                 </div>
               </div>
             </div>
             <div>
-              <p className={cn(
-                "text-3xl font-black tracking-tight",
-                hasDeficit ? "text-amber-800" : "text-bento-text-main"
-              )}>
-                {formatCurrency(freeCash, group.currency)}
+              <p className="text-3xl font-black tracking-tight text-bento-text-main">
+                {formatCurrency(freeTotalForVirtual, group.currency)}
               </p>
-              {hasDeficit && (
-                <p className="text-[11px] font-bold text-amber-800 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                  <span>Čerpáno {formatCurrency(deficitAmount, group.currency)} z úspor v obálkách</span>
-                </p>
-              )}
             </div>
           </div>
 
@@ -981,9 +961,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                 </div>
                 <div>
                   <p className="text-[10px] font-black text-bento-text-muted uppercase tracking-[0.15em]">V obálkách</p>
-                  <p className="text-[11px] font-semibold text-slate-500">
-                    {hasDeficit ? 'Skutečně dostupné' : 'Vyčleněné úspory'}
-                  </p>
+                  <p className="text-[11px] font-semibold text-slate-500">Vyčleněné úspory</p>
                 </div>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-100">
@@ -992,13 +970,8 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
             </div>
             <div>
               <p className="text-3xl font-black text-bento-text-main tracking-tight">
-                {formatCurrency(effectiveTotalInEnvelopes, group.currency)}
+                {formatCurrency(totalInEnvelopes, group.currency)}
               </p>
-              {hasDeficit && (
-                <p className="text-[11px] font-semibold text-slate-400 mt-0.5">
-                  Nominálně: {formatCurrency(totalInEnvelopes, group.currency)}
-                </p>
-              )}
             </div>
           </div>
 
@@ -1010,7 +983,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                   <Coins className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em]">Celková hotovost</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em]">Celkově v pokladně</p>
                   <p className="text-[11px] font-semibold text-slate-400">Volná hotovost + obálky</p>
                 </div>
               </div>
@@ -1272,7 +1245,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
               {envelopes
                 .filter(env => {
                   if (envelopeTab === 'all') return true;
@@ -1281,28 +1254,26 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                 })
                 .map((env) => {
                   const theme = getColorClasses(env.color);
-                  const effectiveAmount = getEffectiveEnvelopeAmount(env);
-                  const coverageRatio = getEnvelopeCoverageRatio(env);
                   const hasTarget = env.targetAmount && env.targetAmount > 0;
-                  const percent = hasTarget ? Math.min(100, Math.round((effectiveAmount / env.targetAmount!) * 100)) : 0;
+                  const percent = hasTarget ? Math.min(100, Math.round((env.amount / env.targetAmount!) * 100)) : 0;
                   const remainingText = getRemainingDaysText(env.targetDate);
 
                   return (
                     <div
                       key={env.id}
                       className={cn(
-                        "rounded-xl p-3.5 border flex flex-col justify-between space-y-3 transition-all shadow-2xs hover:shadow-xs",
+                        "rounded-2xl p-3 border flex flex-col justify-between space-y-1.5 aspect-[1/0.95] sm:aspect-square min-h-[170px] transition-all shadow-2xs hover:shadow-xs overflow-hidden",
                         theme.cardBg
                       )}
                     >
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-1.5">
-                          <span className={cn("px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0", theme.badgeBg)}>
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={cn("px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center gap-0.5 shrink-0", theme.badgeBg)}>
                             <span>
                               {showSplitAccounts && env.type === 'cash'
-                                ? '💵 Hotovostní'
+                                ? '💵 Hotovost'
                                 : showSplitAccounts && env.type === 'bank'
-                                ? '🏦 Na účtu'
+                                ? '🏦 Účet'
                                 : '🌐 Klasická'}
                             </span>
                           </span>
@@ -1327,33 +1298,28 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                         </div>
 
                         <div>
-                          <h4 className="font-extrabold text-slate-900 text-sm leading-tight line-clamp-1">{env.name}</h4>
+                          <h4 className="font-extrabold text-slate-900 text-xs sm:text-sm leading-tight truncate">{env.name}</h4>
                           {env.note && (
-                            <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{env.note}</p>
+                            <p className="text-[10px] text-slate-500 truncate mt-0.5">{env.note}</p>
                           )}
                         </div>
 
                         <div>
-                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
-                            {coverageRatio < 1 ? 'Skutečně dostupné' : 'Uloženo v obálce'}
+                          <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
+                            Uloženo
                           </span>
-                          <p className={cn("text-xl font-black tracking-tight font-mono", theme.accentText)}>
-                            {formatCurrency(effectiveAmount, group.currency)}
+                          <p className={cn("text-base sm:text-lg font-black tracking-tight font-mono truncate", theme.accentText)}>
+                            {formatCurrency(env.amount, group.currency)}
                           </p>
-                          {coverageRatio < 1 && (
-                            <span className="text-[9px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block mt-0.5">
-                              Čerpáno • Nominál: {formatCurrency(env.amount, group.currency)}
-                            </span>
-                          )}
                         </div>
 
                         {hasTarget && (
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between text-[10px] font-bold text-slate-600">
-                              <span>Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
-                              <span>{percent}%</span>
+                          <div className="space-y-0.5">
+                            <div className="flex items-center justify-between text-[9px] font-bold text-slate-600">
+                              <span className="truncate">Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
+                              <span className="shrink-0">{percent}%</span>
                             </div>
-                            <div className="w-full bg-slate-200/80 rounded-full h-1.5 overflow-hidden">
+                            <div className="w-full bg-slate-200/80 rounded-full h-1 overflow-hidden">
                               <div
                                 className={cn("h-full rounded-full transition-all duration-500", theme.progressBg)}
                                 style={{ width: `${percent}%` }}
@@ -1363,14 +1329,14 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                         )}
 
                         {env.targetDate && (
-                          <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-slate-200/60 font-medium text-slate-500">
-                            <span className="flex items-center gap-1 font-semibold text-slate-600 text-[10px]">
-                              <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                          <div className="flex items-center justify-between text-[9px] pt-1 border-t border-slate-200/60 font-medium text-slate-500">
+                            <span className="flex items-center gap-0.5 font-semibold text-slate-600 text-[9px] truncate">
+                              <Calendar className="w-2.5 h-2.5 text-indigo-500 shrink-0" />
                               <span>{new Date(env.targetDate).toLocaleDateString('cs-CZ')}</span>
                             </span>
                             {remainingText && (
                               <span className={cn(
-                                "px-1.5 py-0.2 rounded-md font-bold text-[9px]",
+                                "px-1 py-0.2 rounded-md font-bold text-[8px] shrink-0",
                                 remainingText === 'Termín vypršel'
                                   ? "bg-rose-100 text-rose-800"
                                   : "bg-indigo-100 text-indigo-800"
@@ -1383,10 +1349,10 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                       </div>
 
                       {!isReadOnly && (
-                        <div className="pt-2 border-t border-slate-200/60 flex items-center gap-1.5">
+                        <div className="pt-1.5 border-t border-slate-200/60 flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => handleOpenTransferModal(env, 'deposit')}
-                            className="flex-1 py-1.5 px-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 transition-all shadow-2xs"
+                            className="flex-1 py-1 px-1 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs"
                           >
                             <Plus className="w-3 h-3" />
                             <span>Vložit</span>
@@ -1395,7 +1361,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                             onClick={() => handleOpenTransferModal(env, 'withdraw')}
                             disabled={env.amount <= 0}
                             className={cn(
-                              "flex-1 py-1.5 px-2 bg-white border rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 transition-all shadow-2xs",
+                              "flex-1 py-1 px-1 bg-white border rounded-lg font-bold text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs",
                               env.amount <= 0
                                 ? "opacity-50 cursor-not-allowed border-slate-200 text-slate-400"
                                 : "hover:bg-amber-50 text-amber-700 border-amber-200"

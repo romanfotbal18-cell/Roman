@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { LogIn, Wallet, AlertCircle, HelpCircle, Loader2, Info } from 'lucide-react';
+import { LogIn, Wallet, AlertCircle, HelpCircle, Loader2, Info, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle, signInAsGuest } from '../firebase';
 
 export default function Login() {
   const [loading, setLoading] = useState<boolean>(false);
@@ -20,6 +20,22 @@ export default function Login() {
       setError({
         code: errorCode,
         message: errorMessage,
+        hostname: window.location.hostname
+      });
+      setLoading(false);
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      await signInAsGuest();
+    } catch (err: any) {
+      console.error("Firebase Guest Login Error:", err);
+      setError({
+        code: err?.code || 'unknown',
+        message: err?.message || String(err),
         hostname: window.location.hostname
       });
       setLoading(false);
@@ -66,16 +82,27 @@ export default function Login() {
             >
               <div className="flex gap-3 items-start">
                 <AlertCircle className="w-5 h-5 shrink-0 text-rose-500 mt-0.5" />
-                <div className="space-y-2">
+                <div className="space-y-2.5 w-full">
                   <p className="font-bold">Chyba při přihlášení</p>
                   
                   {error.code === 'auth/unauthorized-domain' ? (
-                    <div className="space-y-1.5 text-xs leading-relaxed">
+                    <div className="space-y-2 text-xs leading-relaxed">
                       <p>
                         Tato doména <code className="px-1.5 py-0.5 bg-rose-100 dark:bg-rose-900 rounded font-mono text-[11px] font-bold">{error.hostname}</code> není autorizovaná ve vašem Firebase projektu!
                       </p>
-                      <p className="font-semibold text-slate-700 dark:text-slate-300">
-                        Jak to opravit:
+                      
+                      <button
+                        type="button"
+                        onClick={handleGuestLogin}
+                        disabled={loading}
+                        className="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-xs my-1"
+                      >
+                        <User className="w-4 h-4" />
+                        <span>Pokračovat ihned jako host (Demo)</span>
+                      </button>
+
+                      <p className="font-semibold text-slate-700 dark:text-slate-300 pt-1">
+                        Jak autorizovat doménu ve Firebase Console:
                       </p>
                       <ol className="list-decimal list-inside pl-1 space-y-1 text-[11px]">
                         <li>Otevřete <strong>Firebase Console</strong></li>
@@ -115,7 +142,7 @@ export default function Login() {
                 <div className="space-y-1.5 text-xs leading-relaxed">
                   <p className="font-bold text-sm">Průvodce řešením přihlášení:</p>
                   <p>
-                    Pro řádné přihlášení je zapotřebí povolit vyskakovací okna (Popups) pro tuto stránku v nastavení vašeho prohlížeče. Přihlašování probíhá bezpečně přes Google účet.
+                    Pro přihlášení přes Google účet je potřeba mít povolená vyskakovací okna (Popups). Můžete se také přihlásit jako host bez nutnosti účtu Google.
                   </p>
                 </div>
               </div>
@@ -135,6 +162,16 @@ export default function Login() {
               <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
             )}
             {loading ? 'Otevírání okna...' : 'Přihlásit se přes Google'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleGuestLogin}
+            disabled={loading}
+            className="w-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold py-3 px-6 rounded-2xl flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all active:scale-95 text-xs disabled:opacity-50"
+          >
+            <User className="w-4 h-4" />
+            <span>Pokračovat jako host (přístup bez Google účtu)</span>
           </button>
         </div>
 

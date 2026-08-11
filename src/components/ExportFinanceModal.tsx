@@ -253,12 +253,14 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
   const totalUnpaidFines = Array.from(allMemberBalancesMap.values()).reduce((sum, m) => sum + m.unpaidDebt, 0);
   const totalOverpayments = Array.from(allMemberBalancesMap.values()).reduce((sum, m) => sum + m.overpayment, 0);
 
+  const isTransferTx = (t: Transaction) => t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId;
+
   const totalIncome = filteredTransactions
-    .filter(t => t.type === 'income')
+    .filter(t => t.type === 'income' && !isTransferTx(t))
     .reduce((sum, t) => sum + (t.amount || 0), 0);
 
   const totalExpense = filteredTransactions
-    .filter(t => t.type === 'expense')
+    .filter(t => t.type === 'expense' && !isTransferTx(t))
     .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
 
   const cashboxBalance = totalIncome - totalExpense;

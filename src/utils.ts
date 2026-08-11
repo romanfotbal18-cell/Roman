@@ -1,5 +1,5 @@
 import { auth } from './firebase';
-import { collection, query, where, getDocs, doc, updateDoc, writeBatch, Firestore } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, Firestore } from 'firebase/firestore';
 import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures, Payment } from './types';
 
 export function isFeatureEnabled(group: Group | undefined, featureKey: keyof GroupEnabledFeatures): boolean {
@@ -146,6 +146,10 @@ export async function reconcileOverpaymentsForMember(
     let updatedCount = 0;
 
     for (const fine of fines) {
+      if (fine.type === 'in_kind' || fine.isInKind) {
+        // Skip automatic monetary reconciliation for in-kind fines
+        continue;
+      }
       const targeted = fineTargetedMap[fine.id] || 0;
       const allocatedFromTargeted = Math.min(fine.amount, targeted);
       const surplusTargeted = Math.max(0, targeted - fine.amount);
@@ -174,6 +178,202 @@ export async function reconcileOverpaymentsForMember(
     }
   } catch (err) {
     console.error('Error reconciling overpayments for member:', memberId, err);
+  }
+}
+
+export async function autoDeductExpenseFromEnvelopes(
+  db: Firestore,
+  groupId: string,
+  periodId: string,
+  expenseAmount: number,
+  accountType: 'cash' | 'bank',
+  batch: any,
+  editingOldExpenseAmount: number = 0
+) {
+  const effectiveExpense = Math.max(0, expenseAmount - editingOldExpenseAmount);
+  if (effectiveExpense <= 0) return;
+
+  try {
+    // 1. Get transactions to compute current balances
+    const transSnap = await getDocs(
+      collection(db, `groups/${groupId}/periods/${periodId}/transactions`)
+    );
+    const transList = transSnap.docs.map(d => d.data());
+
+    const cashBalance = transList.reduce((sum, t) => {
+      const acc = (t.account === 'bank' || t.paymentMethod === 'bank' || t.paymentMethod === 'purchase') ? 'bank' : 'cash';
+      return acc === 'cash' ? sum + (t.amount || 0) : sum;
+    }, 0);
+
+    const bankBalance = transList.reduce((sum, t) => {
+      const acc = (t.account === 'bank' || t.paymentMethod === 'bank' || t.paymentMethod === 'purchase') ? 'bank' : 'cash';
+      return acc === 'bank' ? sum + (t.amount || 0) : sum;
+    }, 0);
+
+    const totalBalance = cashBalance + bankBalance;
+
+    // 2. Get envelopes
+    const envSnap = await getDocs(
+      collection(db, `groups/${groupId}/periods/${periodId}/envelopes`)
+    );
+    const envelopes = envSnap.docs.map(d => ({
+      id: d.id,
+      ref: d.ref,
+      ...d.data()
+    })) as Array<{ id: string; ref: any; amount: number; type?: 'virtual' | 'cash' | 'bank' }>;
+
+    const explicitCashEnvelopes = envelopes.filter(e => e.type === 'cash').reduce((sum, e) => sum + (e.amount || 0), 0);
+    const explicitBankEnvelopes = envelopes.filter(e => e.type === 'bank').reduce((sum, e) => sum + (e.amount || 0), 0);
+    const explicitVirtualTotal = envelopes.filter(e => e.type === 'virtual' || !e.type).reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    const bankCapacityForVirtual = Math.max(0, bankBalance - explicitBankEnvelopes);
+    const allocatedBankForVirtual = Math.min(bankCapacityForVirtual, explicitVirtualTotal);
+    const remainingVirtualAfterBank = explicitVirtualTotal - allocatedBankForVirtual;
+
+    const cashCapacityForVirtual = Math.max(0, cashBalance - explicitCashEnvelopes);
+    const allocatedCashForVirtual = Math.min(cashCapacityForVirtual, remainingVirtualAfterBank);
+
+    const bankEnvelopesTotal = explicitBankEnvelopes + allocatedBankForVirtual;
+    const cashEnvelopesTotal = explicitCashEnvelopes + allocatedCashForVirtual;
+    const virtualEnvelopesTotal = explicitVirtualTotal - allocatedBankForVirtual - allocatedCashForVirtual;
+    const totalInEnvelopes = explicitCashEnvelopes + explicitBankEnvelopes + explicitVirtualTotal;
+
+    // 3. Fetch group to check enabled features
+    const groupSnap = await getDoc(doc(db, `groups/${groupId}`));
+    const groupData = groupSnap.exists() ? (groupSnap.data() as Group) : undefined;
+    const showSplitAccounts = isFeatureEnabled(groupData, 'splitCashboxAccounts');
+
+    let freeCashAvailable = 0;
+    if (showSplitAccounts) {
+      if (accountType === 'cash') {
+        freeCashAvailable = Math.max(0, cashBalance - cashEnvelopesTotal);
+      } else if (accountType === 'bank') {
+        freeCashAvailable = Math.max(0, bankBalance - bankEnvelopesTotal);
+      } else {
+        freeCashAvailable = Math.max(0, totalBalance - totalInEnvelopes);
+      }
+    } else {
+      freeCashAvailable = Math.max(0, totalBalance - totalInEnvelopes);
+    }
+
+    const deficit = effectiveExpense - freeCashAvailable;
+    if (deficit <= 0) return; // Free cash is enough
+
+    // Determine eligible envelopes
+    const primaryType: 'cash' | 'bank' = accountType === 'cash' ? 'cash' : 'bank';
+
+    // Priority 1: Envelopes matching primaryType with amount > 0
+    const primaryEnvelopes = envelopes.filter(e => e.type === primaryType && (e.amount || 0) > 0);
+    const primaryTotal = primaryEnvelopes.reduce((sum, e) => sum + e.amount, 0);
+
+    let targetEnvelopes = [...primaryEnvelopes];
+    let totalEligible = primaryTotal;
+
+    // Fallback: Virtual envelopes, then remaining envelopes with amount > 0
+    if (totalEligible < deficit) {
+      const virtualEnvelopes = envelopes.filter(e => (e.type === 'virtual' || !e.type) && (e.amount || 0) > 0);
+      const otherEnvelopes = envelopes.filter(e => e.type !== primaryType && e.type !== 'virtual' && e.type && (e.amount || 0) > 0);
+      targetEnvelopes = [...targetEnvelopes, ...virtualEnvelopes, ...otherEnvelopes];
+      totalEligible = targetEnvelopes.reduce((sum, e) => sum + e.amount, 0);
+    }
+
+    if (totalEligible <= 0) return;
+
+    const amountToDeduct = Math.min(deficit, totalEligible);
+    const isIntegerDeduction = Number.isInteger(amountToDeduct) && targetEnvelopes.every(e => Number.isInteger(e.amount));
+
+    const updatesMap = new Map<string, { currentAmt: number; deductAmt: number }>();
+    targetEnvelopes.forEach(e => {
+      updatesMap.set(e.id, { currentAmt: e.amount, deductAmt: 0 });
+    });
+
+    if (isIntegerDeduction) {
+      // Whole integer CZK distribution algorithm (e.g. 200 CZK from 3 envelopes -> 67, 67, 66 CZK)
+      let remainingInt = Math.round(amountToDeduct);
+      let active = targetEnvelopes.filter(e => e.amount > 0);
+
+      while (remainingInt > 0 && active.length > 0) {
+        const count = active.length;
+        const baseShare = Math.floor(remainingInt / count);
+        let remainder = remainingInt - (baseShare * count);
+
+        let allocated = 0;
+        const nextActive: typeof active = [];
+
+        for (let i = 0; i < active.length; i++) {
+          const env = active[i];
+          const item = updatesMap.get(env.id)!;
+          const availableInEnv = env.amount - item.deductAmt;
+
+          let targetShare = baseShare + (remainder > 0 ? 1 : 0);
+          if (remainder > 0) remainder--;
+
+          const share = Math.min(availableInEnv, targetShare);
+          if (share > 0) {
+            item.deductAmt += share;
+            allocated += share;
+          }
+
+          if (env.amount - item.deductAmt > 0) {
+            nextActive.push(env);
+          }
+        }
+
+        remainingInt -= allocated;
+        if (allocated === 0) break;
+        active = nextActive;
+      }
+    } else {
+      // Fallback for fractional decimal amounts
+      let remainingDec = Math.round(amountToDeduct * 100) / 100;
+      let active = targetEnvelopes.filter(e => e.amount > 0);
+
+      while (remainingDec > 0.001 && active.length > 0) {
+        const count = active.length;
+        const availTotal = active.reduce((sum, e) => sum + (e.amount - updatesMap.get(e.id)!.deductAmt), 0);
+        if (availTotal <= 0) break;
+
+        let allocated = 0;
+        const nextActive: typeof active = [];
+
+        for (let i = 0; i < active.length; i++) {
+          const env = active[i];
+          const item = updatesMap.get(env.id)!;
+          const availableInEnv = env.amount - item.deductAmt;
+
+          let share = 0;
+          if (i === active.length - 1) {
+            share = Math.min(availableInEnv, remainingDec);
+          } else {
+            const prop = (availableInEnv / availTotal) * remainingDec;
+            share = Math.min(availableInEnv, Math.round(prop * 100) / 100);
+          }
+
+          if (share > 0) {
+            item.deductAmt = Math.round((item.deductAmt + share) * 100) / 100;
+            allocated += share;
+          }
+
+          if (env.amount - item.deductAmt > 0) {
+            nextActive.push(env);
+          }
+        }
+
+        remainingDec = Math.round((remainingDec - allocated) * 100) / 100;
+        if (allocated === 0) break;
+        active = nextActive;
+      }
+    }
+
+    updatesMap.forEach(({ currentAmt, deductAmt }, envId) => {
+      if (deductAmt > 0) {
+        const envRef = doc(db, `groups/${groupId}/periods/${periodId}/envelopes/${envId}`);
+        const newAmt = Math.max(0, Math.round((currentAmt - deductAmt) * 100) / 100);
+        batch.update(envRef, { amount: newAmt });
+      }
+    });
+  } catch (err) {
+    console.error("Error in autoDeductExpenseFromEnvelopes:", err);
   }
 }
 
@@ -405,4 +605,73 @@ export function getRecurringFineOccurrencesInRange(
   }
 
   return results;
+}
+
+export async function redistributeEnvelopesOnSplitEnable(db: any, groupId: string, periodId: string) {
+  try {
+    const txSnap = await getDocs(collection(db, `groups/${groupId}/periods/${periodId}/transactions`));
+    let cashBalance = 0;
+    let bankBalance = 0;
+    txSnap.docs.forEach(docSnap => {
+      const data = docSnap.data();
+      const account = data.account || (data.source === 'bank' || data.category === 'Banka' ? 'bank' : 'cash');
+      const amount = data.amount || 0;
+      if (account === 'bank') bankBalance += amount;
+      else cashBalance += amount;
+    });
+
+    const envSnap = await getDocs(collection(db, `groups/${groupId}/periods/${periodId}/envelopes`));
+    const envelopes = envSnap.docs.map(docSnap => ({
+      id: docSnap.id,
+      ref: docSnap.ref,
+      ...docSnap.data()
+    })) as Array<{ id: string; ref: any; name: string; amount: number; type?: 'virtual' | 'cash' | 'bank'; [key: string]: any }>;
+
+    const explicitBankTotal = envelopes.filter(e => e.type === 'bank').reduce((sum, e) => sum + (e.amount || 0), 0);
+    let remainingBankCapacity = Math.max(0, bankBalance - explicitBankTotal);
+
+    const virtualEnvelopes = envelopes.filter(e => e.type === 'virtual' || !e.type);
+    if (virtualEnvelopes.length === 0) return;
+
+    const batch = writeBatch(db);
+
+    for (const env of virtualEnvelopes) {
+      const amt = env.amount || 0;
+      if (amt <= 0) {
+        batch.update(env.ref, { type: 'cash' });
+        continue;
+      }
+
+      if (amt <= remainingBankCapacity) {
+        batch.update(env.ref, { type: 'bank' });
+        remainingBankCapacity -= amt;
+      } else if (remainingBankCapacity > 0) {
+        const bankPart = remainingBankCapacity;
+        const cashPart = amt - remainingBankCapacity;
+
+        batch.update(env.ref, { amount: bankPart, type: 'bank' });
+
+        const newEnvRef = doc(collection(db, `groups/${groupId}/periods/${periodId}/envelopes`));
+        batch.set(newEnvRef, {
+          name: `${env.name} (v hotovosti)`,
+          amount: cashPart,
+          targetAmount: env.targetAmount || null,
+          targetDate: env.targetDate || null,
+          note: env.note || '',
+          color: env.color || 'indigo',
+          type: 'cash',
+          periodId: periodId,
+          createdAt: Date.now() + 1
+        });
+
+        remainingBankCapacity = 0;
+      } else {
+        batch.update(env.ref, { type: 'cash' });
+      }
+    }
+
+    await batch.commit();
+  } catch (error) {
+    console.error("Chyba při přerozdělování obálek při aktivaci rozšířené pokladny:", error);
+  }
 }

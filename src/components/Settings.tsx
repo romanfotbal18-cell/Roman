@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch, getDocs, where, setDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole, GroupEnabledFeatures } from '../types';
-import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency, isFeatureEnabled, getRecurringFineOccurrencesInRange } from '../utils';
+import { Group, Member, FineTemplate, OperationType, Period, MemberGroup, Event, GroupMemberRole, GroupEnabledFeatures, Envelope } from '../types';
+import { handleFirestoreError, cn, getUserRole, getCurrencySymbol, formatCurrency, isFeatureEnabled, getRecurringFineOccurrencesInRange, redistributeEnvelopesOnSplitEnable } from '../utils';
 import { Plus, Trash2, Edit2, Users, ReceiptText, AlertTriangle, X, Hash, ChevronDown, Save, CheckSquare, Square, Copy, Check, Loader2, Layers, GripVertical, Calendar as CalendarIcon, Info, ChevronLeft, ChevronRight, Cake, Share2, Crown, Eye, Edit3, UserPlus, LogOut, Coins, Building2, Sliders, Target, Folder, PieChart, Wallet, HelpCircle, Sparkles, QrCode, Upload, Image as ImageIcon, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -39,21 +39,96 @@ export default function Settings({ group, period }: SettingsProps) {
   const [recurringFines, setRecurringFines] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'members' | 'templates' | 'events' | 'bank' | 'sharing' | 'modules'>('templates');
 
-  const handleToggleFeature = async (featureKey: keyof GroupEnabledFeatures) => {
-    if (isReadOnly) return;
-    const currentVal = isFeatureEnabled(group, featureKey);
-    const currentFeatures = group.enabledFeatures || {};
+  // Split cashbox accounts modal states
+  const [blockedSplitAccountsModalInfo, setBlockedSplitAccountsModalInfo] = useState<{
+    isOpen: boolean;
+    envelopes: { id: string; periodId: string; name: string; type: 'cash' | 'bank'; periodName?: string }[];
+  } | null>(null);
+  const [confirmEnableSplitModalOpen, setConfirmEnableSplitModalOpen] = useState(false);
+  const [isCheckingEnvelopes, setIsCheckingEnvelopes] = useState(false);
+  const [isConvertingEnvelopes, setIsConvertingEnvelopes] = useState(false);
 
+  const executeToggleFeature = async (featureKey: keyof GroupEnabledFeatures, targetValue: boolean) => {
+    const currentFeatures = group.enabledFeatures || {};
     try {
       await updateDoc(doc(db, 'groups', group.id), {
         enabledFeatures: {
           ...currentFeatures,
-          [featureKey]: !currentVal
+          [featureKey]: targetValue
         }
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}`);
     }
+  };
+
+  const handleConvertEnvelopesAndDisableSplit = async () => {
+    if (!blockedSplitAccountsModalInfo || isConvertingEnvelopes) return;
+    setIsConvertingEnvelopes(true);
+    try {
+      const batch = writeBatch(db);
+      blockedSplitAccountsModalInfo.envelopes.forEach(env => {
+        const envRef = doc(db, `groups/${group.id}/periods/${env.periodId}/envelopes/${env.id}`);
+        batch.update(envRef, { type: 'virtual' });
+      });
+      await batch.commit();
+
+      await executeToggleFeature('splitCashboxAccounts', false);
+      setBlockedSplitAccountsModalInfo(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${group.id}`);
+    } finally {
+      setIsConvertingEnvelopes(false);
+    }
+  };
+
+  const handleToggleFeature = async (featureKey: keyof GroupEnabledFeatures) => {
+    if (isReadOnly) return;
+    const currentVal = isFeatureEnabled(group, featureKey);
+
+    if (featureKey === 'splitCashboxAccounts') {
+      if (currentVal) {
+        // Trying to switch from Split Mode -> Simple Mode (turning OFF split accounts)
+        setIsCheckingEnvelopes(true);
+        try {
+          const specificEnvelopes: { id: string; periodId: string; name: string; type: 'cash' | 'bank'; periodName?: string }[] = [];
+          const periodsToCheck = periods.length > 0 ? periods : [period];
+          for (const p of periodsToCheck) {
+            const envSnap = await getDocs(collection(db, `groups/${group.id}/periods/${p.id}/envelopes`));
+            envSnap.docs.forEach(docSnap => {
+              const data = docSnap.data();
+              if (data.type === 'cash' || data.type === 'bank') {
+                specificEnvelopes.push({
+                  id: docSnap.id,
+                  periodId: p.id,
+                  name: data.name || 'Bez názvu',
+                  type: data.type as 'cash' | 'bank',
+                  periodName: p.name
+                });
+              }
+            });
+          }
+
+          if (specificEnvelopes.length > 0) {
+            setBlockedSplitAccountsModalInfo({
+              isOpen: true,
+              envelopes: specificEnvelopes
+            });
+            return;
+          }
+        } catch (err) {
+          console.error("Chyba při kontrole obálek:", err);
+        } finally {
+          setIsCheckingEnvelopes(false);
+        }
+      } else {
+        // Trying to switch from Simple Mode -> Split Mode (turning ON split accounts)
+        setConfirmEnableSplitModalOpen(true);
+        return;
+      }
+    }
+
+    await executeToggleFeature(featureKey, !currentVal);
   };
 
   const userRole = getUserRole(group, auth.currentUser?.email, auth.currentUser?.uid);
@@ -180,8 +255,10 @@ export default function Settings({ group, period }: SettingsProps) {
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [templateAmount, setTemplateAmount] = useState('');
-  const [templateType, setTemplateType] = useState<'fixed' | 'dynamic'>('fixed');
+  const [templateType, setTemplateType] = useState<'fixed' | 'dynamic' | 'in_kind'>('fixed');
   const [templateUnit, setTemplateUnit] = useState('');
+  const [templateQuantity, setTemplateQuantity] = useState('1');
+  const [templateItemOrTask, setTemplateItemOrTask] = useState('');
   const [editingTemplate, setEditingTemplate] = useState<FineTemplate | null>(null);
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
   
@@ -489,8 +566,8 @@ export default function Settings({ group, period }: SettingsProps) {
   };
 
   const saveTemplate = async () => {
-    const amount = parseFloat(templateAmount);
-    if (isReadOnly || !templateName.trim() || isNaN(amount) || isSaving) return;
+    const amount = templateType === 'in_kind' ? 0 : parseFloat(templateAmount);
+    if (isReadOnly || !templateName.trim() || (templateType !== 'in_kind' && isNaN(amount)) || isSaving) return;
     setIsSaving(true);
     try {
       const templatePath = `groups/${group.id}/periods/${period.id}/fineTemplates`;
@@ -498,7 +575,9 @@ export default function Settings({ group, period }: SettingsProps) {
         name: templateName.trim(),
         amount: amount,
         type: templateType,
-        unit: templateType === 'dynamic' ? templateUnit : null,
+        unit: templateType === 'in_kind' ? (templateItemOrTask.trim() || templateUnit.trim()) : (templateType === 'dynamic' ? templateUnit : null),
+        quantity: templateType === 'in_kind' ? (parseFloat(templateQuantity) || 1) : null,
+        itemOrTask: templateType === 'in_kind' ? (templateItemOrTask.trim() || templateUnit.trim()) : null,
         groupId: group.id,
         order: editingTemplate ? (editingTemplate.order ?? templates.length) : templates.length
       };
@@ -516,6 +595,8 @@ export default function Settings({ group, period }: SettingsProps) {
       setTemplateAmount('');
       setTemplateType('fixed');
       setTemplateUnit('');
+      setTemplateQuantity('1');
+      setTemplateItemOrTask('');
       setEditingTemplate(null);
     } catch (error) {
       console.error(error);
@@ -1061,6 +1142,8 @@ export default function Settings({ group, period }: SettingsProps) {
                   setTemplateAmount('');
                   setTemplateType('fixed');
                   setTemplateUnit('');
+                  setTemplateQuantity('1');
+                  setTemplateItemOrTask('');
                   setIsTemplateModalOpen(true);
                 }}
                 className="px-5 py-3 bg-bento-accent text-white rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-black transition-all shadow-lg shadow-bento-accent/10 active:scale-95"
@@ -1099,10 +1182,18 @@ export default function Settings({ group, period }: SettingsProps) {
                         </div>
                         <div className="text-left min-w-0 pr-2">
                           <h3 className="font-bold text-bento-text-main text-[13px] leading-tight truncate">{t.name}</h3>
-                          <p className="text-bento-accent font-black text-[10px] tracking-tight flex items-center gap-2">
-                            {t.amount} {getCurrencySymbol(currentCurrency)}{t.type === 'dynamic' ? ` / ${t.unit}` : ''}
-                            <GripVertical className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </p>
+                          {t.type === 'in_kind' ? (
+                            <p className="text-blue-600 font-extrabold text-[10px] tracking-tight flex items-center gap-1.5 mt-0.5">
+                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded text-[9px] uppercase font-black">Věcná</span>
+                              <span>{t.quantity || 1}x {t.itemOrTask || t.unit || 'úkol/věc'}</span>
+                              <GripVertical className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </p>
+                          ) : (
+                            <p className="text-bento-accent font-black text-[10px] tracking-tight flex items-center gap-2">
+                              {t.amount} {getCurrencySymbol(currentCurrency)}{t.type === 'dynamic' ? ` / ${t.unit}` : ''}
+                              <GripVertical className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-1 shrink-0">
@@ -1111,9 +1202,11 @@ export default function Settings({ group, period }: SettingsProps) {
                             e.stopPropagation();
                             setEditingTemplate(t);
                             setTemplateName(t.name);
-                            setTemplateAmount(t.amount.toString());
-                            setTemplateType(t.type);
+                            setTemplateAmount(t.amount ? t.amount.toString() : '');
+                            setTemplateType(t.type || 'fixed');
                             setTemplateUnit(t.unit || '');
+                            setTemplateQuantity(t.quantity ? t.quantity.toString() : '1');
+                            setTemplateItemOrTask(t.itemOrTask || t.unit || '');
                             setIsMemberModalOpen(false);
                             setIsGroupModalOpen(false);
                             setIsTemplateModalOpen(true);
@@ -2315,19 +2408,23 @@ export default function Settings({ group, period }: SettingsProps) {
                 </div>
                 <button
                   type="button"
-                  disabled={isReadOnly}
+                  disabled={isReadOnly || isCheckingEnvelopes}
                   onClick={() => handleToggleFeature('splitCashboxAccounts')}
                   className={cn(
-                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50",
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 items-center justify-center",
                     isFeatureEnabled(group, 'splitCashboxAccounts') ? "bg-indigo-600" : "bg-slate-200"
                   )}
                 >
-                  <span
-                    className={cn(
-                      "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                      isFeatureEnabled(group, 'splitCashboxAccounts') ? "translate-x-4" : "translate-x-0"
-                    )}
-                  />
+                  {isCheckingEnvelopes ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-white" />
+                  ) : (
+                    <span
+                      className={cn(
+                        "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        isFeatureEnabled(group, 'splitCashboxAccounts') ? "translate-x-2" : "-translate-x-2"
+                      )}
+                    />
+                  )}
                 </button>
               </div>
 
@@ -2472,7 +2569,7 @@ export default function Settings({ group, period }: SettingsProps) {
 
                   <div>
                     <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Typ výpočtu</label>
-                    <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl">
+                    <div className="flex gap-1.5 p-1 bg-slate-100/50 rounded-xl">
                       <button
                         onClick={() => setTemplateType('fixed')}
                         className={cn(
@@ -2491,34 +2588,69 @@ export default function Settings({ group, period }: SettingsProps) {
                       >
                         Za jednotku
                       </button>
+                      <button
+                        onClick={() => setTemplateType('in_kind')}
+                        className={cn(
+                          "flex-1 py-2.5 rounded-lg font-bold text-[10px] uppercase tracking-wider transition-all",
+                          templateType === 'in_kind' ? "bg-blue-600 text-white shadow-sm" : "text-bento-text-muted hover:text-blue-600"
+                        )}
+                      >
+                        Věcná / Úkol
+                      </button>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">
-                        {templateType === 'fixed' ? `Sazba (${getCurrencySymbol(currentCurrency)})` : `${getCurrencySymbol(currentCurrency)}/jedn.`}
-                      </label>
-                      <input
-                        type="number"
-                        className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-base transition-all"
-                        value={templateAmount}
-                        onChange={(e) => setTemplateAmount(e.target.value)}
-                      />
-                    </div>
-                    {templateType === 'dynamic' && (
+                  {templateType === 'in_kind' ? (
+                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Jednotka</label>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Množství</label>
                         <input
-                          type="text"
-                          placeholder="min, km..."
-                          className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-base transition-all"
-                          value={templateUnit}
-                          onChange={(e) => setTemplateUnit(e.target.value)}
+                          type="number"
+                          min="1"
+                          placeholder="1"
+                          className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/10 font-bold text-base transition-all"
+                          value={templateQuantity}
+                          onChange={(e) => setTemplateQuantity(e.target.value)}
                         />
                       </div>
-                    )}
-                  </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Věc / Úkol</label>
+                        <input
+                          type="text"
+                          placeholder="Marlenka, káva, občerstvení..."
+                          className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/10 font-bold text-base transition-all"
+                          value={templateItemOrTask}
+                          onChange={(e) => setTemplateItemOrTask(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">
+                          {templateType === 'fixed' ? `Sazba (${getCurrencySymbol(currentCurrency)})` : `${getCurrencySymbol(currentCurrency)}/jedn.`}
+                        </label>
+                        <input
+                          type="number"
+                          className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-base transition-all"
+                          value={templateAmount}
+                          onChange={(e) => setTemplateAmount(e.target.value)}
+                        />
+                      </div>
+                      {templateType === 'dynamic' && (
+                        <div>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-bento-text-muted block mb-2">Jednotka</label>
+                          <input
+                            type="text"
+                            placeholder="min, km..."
+                            className="w-full px-5 py-3.5 bg-slate-50 border border-bento-card-border rounded-xl focus:outline-none focus:ring-2 focus:ring-bento-accent/10 font-bold text-base transition-all"
+                            value={templateUnit}
+                            onChange={(e) => setTemplateUnit(e.target.value)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <button
                     disabled={isSaving}
@@ -3046,6 +3178,128 @@ export default function Settings({ group, period }: SettingsProps) {
                   className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-xs uppercase tracking-wider transition-all active:scale-[0.99] shadow-lg shadow-slate-200 cursor-pointer"
                 >
                   Rozumím
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Blocked Split Accounts Switch Modal */}
+      <AnimatePresence>
+        {blockedSplitAccountsModalInfo?.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 z-[120]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-bento-card-border"
+            >
+              <div className="w-14 h-14 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mb-5 mx-auto">
+                <AlertTriangle className="w-7 h-7" />
+              </div>
+              <h2 className="text-xl font-extrabold text-center mb-2 text-slate-900">
+                Existují speciální obálky (hotovost / účet)
+              </h2>
+              <p className="text-xs text-slate-600 text-center leading-relaxed mb-4">
+                Před přepnutím na jednoduchou pokladnu je potřeba vyřešit vytvořené obálky určené přímo pro <strong className="text-slate-800">fyzickou hotovost</strong> nebo <strong className="text-slate-800">bankovní účet</strong>.
+              </p>
+              <div className="text-xs text-indigo-950 bg-indigo-50/80 border border-indigo-200 rounded-2xl p-4 mb-4 leading-relaxed font-medium">
+                <p className="font-extrabold text-indigo-900 mb-1 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span>Nemusíte obálky mazat!</span>
+                </p>
+                Můžete je jedním kliknutím automaticky <strong className="text-indigo-900">převést na klasické obálky</strong> (vycházející z celkových peněz v pokladně). Pokud v budoucnu znovu zapnete rozdělenou pokladnu, tyto převedené obálky již <strong className="text-indigo-900">zůstanou klasickými obálkami</strong>.
+              </div>
+
+              <div className="mb-6 max-h-36 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                  Nalezené speciální obálky ({blockedSplitAccountsModalInfo.envelopes.length}):
+                </p>
+                {blockedSplitAccountsModalInfo.envelopes.map(env => (
+                  <div key={env.id} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                    <span className="font-bold text-slate-800 truncate pr-2">{env.name}</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={cn(
+                        "text-[9px] font-bold px-2 py-0.5 rounded-full border",
+                        env.type === 'cash' ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                      )}>
+                        {env.type === 'cash' ? 'Hotovostní' : 'Na účet'}
+                      </span>
+                      {env.periodName && (
+                        <span className="text-[9px] text-slate-400 font-medium">({env.periodName})</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={isConvertingEnvelopes}
+                  onClick={handleConvertEnvelopesAndDisableSplit}
+                  className="w-full btn-bento-primary py-3.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+                >
+                  {isConvertingEnvelopes && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>Převést na klasické obálky a přepnout</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isConvertingEnvelopes}
+                  onClick={() => setBlockedSplitAccountsModalInfo(null)}
+                  className="w-full py-2.5 text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-700 transition-colors"
+                >
+                  Zrušit (chci obálky upravit nebo smazat ručně)
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirmation Modal when Enabling Split Cashbox Accounts */}
+      <AnimatePresence>
+        {confirmEnableSplitModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 z-[120]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-bento-card-border"
+            >
+              <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-5 mx-auto">
+                <Building2 className="w-7 h-7" />
+              </div>
+              <h2 className="text-xl font-extrabold text-center mb-2 text-slate-900">
+                Přepnout na rozdělenou pokladnu?
+              </h2>
+              <p className="text-xs text-slate-600 text-center leading-relaxed mb-4">
+                Aktivací rozdělení pokladny budete moci sledovat hotovost a bankovní účet odděleně a vytvářet obálky určené pro konkrétní typ účtu.
+              </p>
+              <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-4 mb-6 text-xs text-indigo-950 leading-relaxed font-medium">
+                <p className="font-extrabold text-indigo-900 mb-1">ℹ️ Upozornění na pozdější změnu:</p>
+                Případná změna zpět na jednoduchou pokladnu bude vyžadovat buď automatický převod hotovostních a bankovních obálek na klasické obálky, nebo jejich ruční smazání.
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setConfirmEnableSplitModalOpen(false)}
+                  className="flex-1 py-3 text-[11px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-50 rounded-xl border border-slate-200"
+                >
+                  Zrušit
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setConfirmEnableSplitModalOpen(false);
+                    await redistributeEnvelopesOnSplitEnable(db, group.id, period.id);
+                    await executeToggleFeature('splitCashboxAccounts', true);
+                  }}
+                  className="flex-1 bg-indigo-600 text-white text-[11px] font-black uppercase tracking-widest py-3 rounded-xl shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 transition-all"
+                >
+                  Aktivovat
                 </button>
               </div>
             </motion.div>
