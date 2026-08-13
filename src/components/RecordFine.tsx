@@ -238,7 +238,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       if (customIsInKind) {
         isInKind = true;
         fineType = 'in_kind';
-        reason = fineCount > 1 ? `${customReason} (${fineCount}x)` : customReason;
+        reason = customReason;
         q = fineCount;
         u = customReason;
       } else {
@@ -250,9 +250,12 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       if (selectedTemplate.type === 'in_kind') {
         isInKind = true;
         fineType = 'in_kind';
-        reason = fineCount > 1 ? `${selectedTemplate.name} (${fineCount}x)` : selectedTemplate.name;
-        q = fineCount;
-        u = selectedTemplate.itemOrTask || selectedTemplate.unit || selectedTemplate.name;
+        const templateQty = selectedTemplate.quantity || 1;
+        const totalQty = templateQty * fineCount;
+        const itemName = selectedTemplate.itemOrTask || selectedTemplate.unit || selectedTemplate.name;
+        reason = selectedTemplate.name;
+        q = totalQty;
+        u = itemName;
       } else if (selectedTemplate.type === 'dynamic') {
         fineType = 'dynamic';
         reason = `${selectedTemplate.name} (${dynamicValue} ${selectedTemplate.unit})`;
@@ -770,8 +773,26 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                         <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Věcný trest / úkol</span>
                         <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-100">Bezplatná pokuta (0 Kč)</span>
                       </div>
+                      <div className="p-2.5 bg-blue-50/60 rounded-lg border border-blue-100 text-xs flex flex-col gap-1">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-600 font-medium">Věc / Úkol z ceníku:</span>
+                          <span className="font-extrabold text-blue-800">
+                            {selectedTemplate.itemOrTask || selectedTemplate.unit || selectedTemplate.name}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-600 font-medium">Základní množství v sazebníku:</span>
+                          <span className="font-bold text-slate-800">{selectedTemplate.quantity || 1}x</span>
+                        </div>
+                        {fineCount > 1 && (
+                          <div className="flex justify-between items-center pt-1 border-t border-blue-200/60 font-bold text-blue-900">
+                            <span>Celkem k odevzdání/splnění:</span>
+                            <span className="text-sm font-black">{(selectedTemplate.quantity || 1) * fineCount}x</span>
+                          </div>
+                        )}
+                      </div>
                       <div className="space-y-2">
-                        <label className="text-[10px] font-black text-bento-accent uppercase tracking-widest">Množství (kolikrát zapsat?)</label>
+                        <label className="text-[10px] font-black text-bento-accent uppercase tracking-widest">Počet násobků (kolikrát udělit?)</label>
                         <div className="flex items-center gap-3">
                           <button 
                             type="button"

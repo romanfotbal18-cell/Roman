@@ -3,7 +3,7 @@ import { collection, query, onSnapshot, addDoc, serverTimestamp, doc, updateDoc,
 import { db, auth } from '../firebase';
 import { Group, Period, Member, Fine, OperationType, Transaction, Payment } from '../types';
 import { handleFirestoreError, formatCurrency, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember, autoDeductExpenseFromEnvelopes } from '../utils';
-import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check, FileSpreadsheet, QrCode, HelpCircle, XCircle } from 'lucide-react';
+import { Search, User as UserIcon, CheckCircle2, ChevronRight, History, CreditCard, X, Loader2, Trash2, Edit2, AlertCircle, Save, Download, Eye, ShoppingBag, Building2, Copy, Check, FileSpreadsheet, QrCode, HelpCircle, XCircle, Pin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 import ExportFinanceModal from './ExportFinanceModal';
@@ -147,10 +147,14 @@ export default function DebtList({ group, period }: DebtListProps) {
     const exportData = sortedForExport
       .map(member => {
         const balance = getMemberDebt(member.id);
-        if (balance === 0) return null;
-
         const unpaidMemberFines = fines.filter(f => f.memberId === member.id && !f.paid && (!f.periodId || f.periodId === period.id) && !(f as any).isDeleted && !(f as any).deleted);
+        
+        if (balance === 0 && unpaidMemberFines.length === 0) return null;
+
         const descriptions = unpaidMemberFines.map(f => {
+          if (f.type === 'in_kind' || f.isInKind) {
+            return `${f.reason} (Věcný trest)`;
+          }
           const remaining = f.amount - (f.paidAmount || 0);
           return `${f.reason} (${formatCurrency(remaining, group.currency)})`;
         }).join(', ');
@@ -158,8 +162,10 @@ export default function DebtList({ group, period }: DebtListProps) {
         return {
           'Jméno': member.name,
           [`Částka (${getCurrencySymbol(group.currency)})`]: balance,
-          'Stav': balance < 0 ? 'Přeplatek (Nabito)' : 'Dluh',
-          'Rozpis dluhů / Poznámka': balance < 0 ? 'Předplaceno na budoucí pokuty' : descriptions
+          'Stav': balance < 0 ? 'Přeplatek (Nabito)' : (balance > 0 ? 'Dluh' : 'Věcné pokuty'),
+          'Rozpis dluhů / Poznámka': balance < 0 
+            ? (unpaidMemberFines.length > 0 ? `Přeplatek + ${descriptions}` : 'Předplaceno na budoucí pokuty') 
+            : descriptions
         };
       })
       .filter(item => item !== null);
@@ -443,6 +449,7 @@ export default function DebtList({ group, period }: DebtListProps) {
       });
 
       for (const fine of sortedUnpaidFines) {
+        if (fine.type === 'in_kind' || fine.isInKind) continue;
         if (remainingPayment <= 0) break;
 
         const currentPaid = fine.paidAmount || 0;
@@ -638,6 +645,10 @@ export default function DebtList({ group, period }: DebtListProps) {
         <div className="grid grid-cols-1 gap-3">
           {filteredMembers.map((member) => {
             const debt = getMemberDebt(member.id);
+            const unpaidInKindFines = fines.filter(
+              f => f.memberId === member.id && !f.paid && (f.type === 'in_kind' || f.isInKind) && !(f as any).isDeleted && !(f as any).deleted
+            );
+            const inKindCount = unpaidInKindFines.length;
             const isSelected = selectedMember?.id === member.id;
             return (
               <motion.button
@@ -686,7 +697,18 @@ export default function DebtList({ group, period }: DebtListProps) {
                     </span>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  {inKindCount > 0 && (
+                    <div 
+                      className="flex items-center gap-1 bg-rose-50 border border-rose-200/90 text-rose-600 px-2 py-1 rounded-lg font-black text-xs shadow-2xs shrink-0"
+                      title={`Má ${inKindCount}x věcnou pokutu (nepeněžní trest)`}
+                    >
+                      <Pin className="w-3.5 h-3.5 text-rose-600 fill-rose-500 shrink-0" />
+                      {inKindCount > 1 && (
+                        <span className="text-xs font-black text-rose-700">{inKindCount}x</span>
+                      )}
+                    </div>
+                  )}
                   <div className={cn(
                     "px-3 py-1.5 rounded-lg font-bold text-xs",
                     debt > 0 
@@ -767,9 +789,6 @@ export default function DebtList({ group, period }: DebtListProps) {
                             <div className="flex flex-col flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-sm text-bento-text-main group-hover:text-bento-accent transition-colors">{fine.reason}</span>
-                                {isInKind && (
-                                  <span className="text-[9px] font-black px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md uppercase tracking-tighter">Věcná / Úkol</span>
-                                )}
                                 {isPartial && (
                                   <span className="text-[9px] font-black px-1.5 py-0.5 bg-rose-100 text-rose-600 rounded-md uppercase tracking-tighter">Částečně</span>
                                 )}
@@ -1716,7 +1735,9 @@ export default function DebtList({ group, period }: DebtListProps) {
                   </div>
                   <div>
                     <h3 className="font-extrabold text-base text-bento-text-main">Vyhodnocení věcné pokuty</h3>
-                    <p className="text-xs text-bento-text-muted font-medium truncate max-w-[220px]">{inKindModalFine.reason}</p>
+                    <p className="text-xs text-blue-700 font-bold truncate max-w-[240px]">
+                      {inKindModalFine.reason}
+                    </p>
                   </div>
                 </div>
                 <button
@@ -1732,10 +1753,30 @@ export default function DebtList({ group, period }: DebtListProps) {
                 </button>
               </div>
 
-              <div className="p-3.5 bg-slate-50 rounded-2xl space-y-1 text-xs">
-                <div className="text-slate-500 font-medium">Člen: <span className="font-bold text-slate-800">{selectedMember?.name}</span></div>
-                <div className="text-slate-500 font-medium">Zapsáno: <span className="font-bold text-slate-800">{new Date(inKindModalFine.createdAt).toLocaleDateString('cs-CZ')}</span></div>
-                <div className="text-slate-500 font-medium">Detail / úkol: <span className="font-bold text-blue-700">{inKindModalFine.reason}</span></div>
+              <div className="p-3.5 bg-blue-50/70 border border-blue-100 rounded-2xl space-y-2 text-xs">
+                <div className="text-slate-600 font-medium">Člen: <span className="font-bold text-slate-900">{selectedMember?.name}</span></div>
+                <div className="text-slate-600 font-medium">Zapsáno: <span className="font-bold text-slate-900">{new Date(inKindModalFine.createdAt).toLocaleDateString('cs-CZ')}</span></div>
+                
+                <div className="pt-2 border-t border-blue-100/80 space-y-1.5">
+                  <div className="flex items-center justify-between text-slate-700">
+                    <span className="font-semibold text-slate-600">Název pokuty:</span>
+                    <span className="font-extrabold text-blue-900 text-sm">
+                      {inKindModalFine.reason}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-700">
+                    <span className="font-semibold text-slate-600">Věc / Úkol:</span>
+                    <span className="font-extrabold text-blue-700 text-sm">
+                      {inKindModalFine.itemOrTask || inKindModalFine.unit || '-'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-700">
+                    <span className="font-semibold text-slate-600">Množství:</span>
+                    <span className="font-black text-blue-800 bg-blue-100/80 px-2.5 py-0.5 rounded-md text-xs">
+                      {inKindModalFine.quantity || 1}x
+                    </span>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-3">

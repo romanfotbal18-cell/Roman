@@ -111,7 +111,7 @@ export default function QuickPayment({ group, period, onSuccess, onCancel }: Qui
       // 3. Mark fines as paid (greedily)
       let remaining = paymentAmount;
       const unpaidFines = fines
-        .filter(f => f.memberId === selectedMember.id && !f.paid)
+        .filter(f => f.memberId === selectedMember.id && !f.paid && !(f.type === 'in_kind' || f.isInKind))
         .sort((a, b) => {
           const isPartialA = (a.paidAmount || 0) > 0;
           const isPartialB = (b.paidAmount || 0) > 0;
