@@ -175,6 +175,14 @@ service cloud.firestore {
           allow update: if canWriteGroupData(groupId);
           allow delete: if canWriteGroupData(groupId);
         }
+
+        // --- Fine Audit Logs ---
+        match /fineAuditLogs/{logId} {
+          allow read: if hasGroupAccess(groupId);
+          allow create: if canWriteGroupData(groupId);
+          allow update: if canWriteGroupData(groupId);
+          allow delete: if canWriteGroupData(groupId);
+        }
       }
     }
   }

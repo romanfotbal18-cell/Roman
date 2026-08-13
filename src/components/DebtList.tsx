@@ -262,6 +262,28 @@ export default function DebtList({ group, period }: DebtListProps) {
     try {
       const path = `groups/${group.id}/periods/${period.id}/fines`;
       console.log(`Attempting to delete fine ${fineId} from ${path}`);
+
+      const fineToDelete = fines.find(f => f.id === fineId);
+      if (fineToDelete) {
+        const member = members.find(m => m.id === fineToDelete.memberId);
+        const auditPath = `groups/${group.id}/periods/${period.id}/fineAuditLogs`;
+        await addDoc(collection(db, auditPath), {
+          action: 'deleted',
+          fineId: fineId,
+          fineReason: fineToDelete.reason,
+          amount: fineToDelete.amount,
+          isInKind: fineToDelete.type === 'in_kind' || fineToDelete.isInKind || false,
+          itemOrTask: fineToDelete.itemOrTask || fineToDelete.unit || '',
+          quantity: fineToDelete.quantity || 1,
+          memberId: fineToDelete.memberId,
+          memberName: member?.name || 'Neznámý člen',
+          createdAt: Date.now(),
+          createdByEmail: auth.currentUser?.email || 'Neznámý e-mail',
+          createdByName: auth.currentUser?.displayName || auth.currentUser?.email || 'Uživatel',
+          createdByUid: auth.currentUser?.uid || ''
+        });
+      }
+
       await deleteDoc(doc(db, path, fineId));
       console.log('Fine deleted successfully');
       setIsDeletingFine(null);

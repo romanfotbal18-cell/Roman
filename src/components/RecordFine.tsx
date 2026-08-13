@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, query, onSnapshot, doc, writeBatch, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, writeBatch, addDoc, updateDoc, deleteDoc, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, Period, Member, FineTemplate, OperationType, MemberGroup, RecurringFine } from '../types';
+import { Group, Period, Member, FineTemplate, OperationType, MemberGroup, RecurringFine, Fine, FineAuditLog } from '../types';
 import { handleFirestoreError, getCurrencySymbol, cn, getUserRole, reconcileOverpaymentsForMember, checkAndExecuteRecurringFines } from '../utils';
-import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye, Zap, Repeat, Play, Pause, Trash2, Edit2, CalendarDays } from 'lucide-react';
+import { Users, ReceiptText, CheckCircle2, ChevronRight, X, AlertCircle, Plus, Hash, Loader2, Layers, ChevronDown, Eye, Zap, Repeat, Play, Pause, Trash2, Edit2, CalendarDays, MessageSquare, History, Clock, PlusCircle, Search, ChevronUp, Mail, User, Tag, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface RecordFineProps {
@@ -57,6 +57,14 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   const [memberSortOption, setMemberSortOption] = useState<'name' | 'age-asc' | 'age-desc'>('name');
   const [recordedNotice, setRecordedNotice] = useState<string | null>(null);
 
+  // Fine Audit Log & History State
+  const [fines, setFines] = useState<Fine[]>([]);
+  const [auditLogs, setAuditLogs] = useState<FineAuditLog[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [selectedAuditLog, setSelectedAuditLog] = useState<FineAuditLog | null>(null);
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'created' | 'deleted'>('all');
+  const [historySearch, setHistorySearch] = useState('');
+
   const formatMemberAgeAndBirth = (birthDate?: string) => {
     if (!birthDate) return null;
     const birth = new Date(birthDate);
@@ -109,13 +117,72 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       handleFirestoreError(error, OperationType.LIST, rfPath);
     });
 
+    const finesPath = `groups/${group.id}/periods/${period.id}/fines`;
+    const unsubFines = onSnapshot(collection(db, finesPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Fine[];
+      setFines(data);
+    }, (error) => {
+      console.warn('Fines snapshot error:', error);
+    });
+
+    const auditPath = `groups/${group.id}/periods/${period.id}/fineAuditLogs`;
+    const unsubAudit = onSnapshot(query(collection(db, auditPath), orderBy('createdAt', 'desc')), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as FineAuditLog[];
+      setAuditLogs(data);
+    }, (error) => {
+      console.warn('fineAuditLogs snapshot error:', error);
+    });
+
     return () => {
       unsubMembers();
       unsubTemplates();
       unsubMemberGroups();
       unsubRecurring();
+      unsubFines();
+      unsubAudit();
     };
   }, [group.id, period.id]);
+
+  const combinedHistory = useMemo(() => {
+    const loggedFineIds = new Set(auditLogs.filter(l => l.action === 'created').map(l => l.fineId));
+
+    const legacyLogs: FineAuditLog[] = fines
+      .filter(f => !loggedFineIds.has(f.id))
+      .map(f => {
+        const m = members.find(mem => mem.id === f.memberId);
+        return {
+          id: `legacy-${f.id}`,
+          action: 'created',
+          fineId: f.id,
+          fineReason: f.reason,
+          amount: f.amount,
+          isInKind: f.type === 'in_kind' || f.isInKind,
+          itemOrTask: f.itemOrTask || f.unit || '',
+          quantity: f.quantity || 1,
+          memberId: f.memberId,
+          memberName: m?.name || 'Člen',
+          createdAt: f.createdAt,
+          createdByEmail: f.createdByEmail || 'Neznámý e-mail',
+          createdByName: f.createdByName || f.createdByEmail || 'Záznam v kase'
+        };
+      });
+
+    const merged = [...auditLogs, ...legacyLogs].sort((a, b) => b.createdAt - a.createdAt);
+
+    return merged.filter(log => {
+      if (historyFilter === 'created' && log.action !== 'created') return false;
+      if (historyFilter === 'deleted' && log.action !== 'deleted') return false;
+      if (historySearch.trim()) {
+        const queryStr = historySearch.toLowerCase();
+        const reasonMatch = log.fineReason.toLowerCase().includes(queryStr);
+        const memberMatch = log.memberName.toLowerCase().includes(queryStr);
+        const emailMatch = log.createdByEmail.toLowerCase().includes(queryStr);
+        const nameMatch = log.createdByName.toLowerCase().includes(queryStr);
+        return reasonMatch || memberMatch || emailMatch || nameMatch;
+      }
+      return true;
+    });
+  }, [auditLogs, fines, members, historyFilter, historySearch]);
 
   const activeMembers = useMemo(() => members.filter(m => m.active), [members]);
 
@@ -278,6 +345,9 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       const timestamp = Date.now();
 
       selectedMemberIds.forEach(memberId => {
+        const member = members.find(m => m.id === memberId);
+        const memberName = member?.name || 'Neznámý člen';
+
         const fineRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/fines`));
         batch.set(fineRef, {
           memberId,
@@ -293,7 +363,26 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
           unit: u,
           type: fineType,
           isInKind: isInKind,
-          itemOrTask: u
+          itemOrTask: u,
+          createdByEmail: auth.currentUser?.email || 'Neznámý e-mail',
+          createdByName: auth.currentUser?.displayName || auth.currentUser?.email || 'Uživatel'
+        });
+
+        const auditRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/fineAuditLogs`));
+        batch.set(auditRef, {
+          action: 'created',
+          fineId: fineRef.id,
+          fineReason: reason,
+          amount: isInKind ? 0 : amount,
+          isInKind: isInKind,
+          itemOrTask: u || '',
+          quantity: q || 1,
+          memberId: memberId,
+          memberName: memberName,
+          createdAt: timestamp,
+          createdByEmail: auth.currentUser?.email || 'Neznámý e-mail',
+          createdByName: auth.currentUser?.displayName || auth.currentUser?.email || 'Uživatel',
+          createdByUid: auth.currentUser?.uid || ''
         });
       });
 
@@ -436,6 +525,9 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
       const timestamp = Date.now();
 
       rf.memberIds.forEach(memberId => {
+        const member = members.find(m => m.id === memberId);
+        const memberName = member?.name || 'Neznámý člen';
+
         const fineRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/fines`));
         batch.set(fineRef, {
           memberId,
@@ -449,7 +541,25 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
           quantity: 1,
           unitPrice: rf.amount,
           unit: '',
-          recurringFineId: rf.id
+          recurringFineId: rf.id,
+          createdByEmail: auth.currentUser?.email || 'Neznámý e-mail',
+          createdByName: auth.currentUser?.displayName || auth.currentUser?.email || 'Uživatel'
+        });
+
+        const auditRef = doc(collection(db, `groups/${group.id}/periods/${period.id}/fineAuditLogs`));
+        batch.set(auditRef, {
+          action: 'created',
+          fineId: fineRef.id,
+          fineReason: `${rf.reason} (Manuální spuštění aut. pokuty)`,
+          amount: rf.amount,
+          isInKind: false,
+          quantity: 1,
+          memberId: memberId,
+          memberName: memberName,
+          createdAt: timestamp,
+          createdByEmail: auth.currentUser?.email || 'Neznámý e-mail',
+          createdByName: auth.currentUser?.displayName || auth.currentUser?.email || 'Uživatel',
+          createdByUid: auth.currentUser?.uid || ''
         });
       });
 
@@ -1371,6 +1481,268 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
             </div>
           )}
         </div>
+      </div>
+
+      {/* Floating Chat / History Log Button & Popover */}
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-3 pointer-events-auto">
+        <AnimatePresence>
+          {isHistoryOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="w-[340px] sm:w-[420px] max-h-[520px] bg-white rounded-3xl shadow-2xl border border-slate-200/90 flex flex-col overflow-hidden text-slate-800"
+            >
+              {/* Header */}
+              <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between shrink-0 border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-bento-accent/20 border border-bento-accent/40 flex items-center justify-center text-bento-accent">
+                    <History className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black tracking-tight text-white flex items-center gap-2">
+                      <span>Historie zapisování pokut</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    </h3>
+                    <p className="text-[10px] text-slate-400 font-medium">
+                      Přehled zápisů a mazání pokut
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsHistoryOpen(false)}
+                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                  title="Schovat okno"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Filters & Search */}
+              <div className="p-3 bg-slate-50/80 border-b border-slate-100 flex flex-col gap-2 shrink-0">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Hledat v historii (jméno, e-mail, pokuta)..."
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-bento-accent/30 focus:border-bento-accent"
+                  />
+                  {historySearch && (
+                    <button
+                      type="button"
+                      onClick={() => setHistorySearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryFilter('all')}
+                    className={cn(
+                      "px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer",
+                      historyFilter === 'all'
+                        ? "bg-slate-900 text-white shadow-xs"
+                        : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                    )}
+                  >
+                    Vše ({combinedHistory.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryFilter('created')}
+                    className={cn(
+                      "px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
+                      historyFilter === 'created'
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+                    )}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    Zapsané
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryFilter('deleted')}
+                    className={cn(
+                      "px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
+                      historyFilter === 'deleted'
+                        ? "bg-rose-600 text-white shadow-xs"
+                        : "bg-white text-rose-700 border border-rose-200 hover:bg-rose-50"
+                    )}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                    Smazané
+                  </button>
+                </div>
+              </div>
+
+              {/* Logs Stream */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
+                {combinedHistory.length > 0 ? (
+                  combinedHistory.map((log) => {
+                    const isSelected = selectedAuditLog?.id === log.id;
+                    const isDeleted = log.action === 'deleted';
+                    const dateObj = new Date(log.createdAt);
+                    const formattedDate = dateObj.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric' });
+                    const formattedTime = dateObj.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                    return (
+                      <div
+                        key={log.id}
+                        onClick={() => setSelectedAuditLog(isSelected ? null : log)}
+                        className={cn(
+                          "p-3 rounded-2xl border transition-all cursor-pointer text-left group",
+                          isDeleted
+                            ? (isSelected ? "bg-rose-50/90 border-rose-300 ring-2 ring-rose-400/30" : "bg-rose-50/40 border-rose-100 hover:border-rose-200 hover:bg-rose-50/70")
+                            : (isSelected ? "bg-emerald-50/90 border-emerald-300 ring-2 ring-emerald-400/30" : "bg-white border-slate-100 shadow-2xs hover:border-bento-accent/30 hover:shadow-xs")
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className={cn(
+                              "text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1",
+                              isDeleted ? "bg-rose-100 text-rose-700 border border-rose-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                            )}>
+                              {isDeleted ? <Trash2 className="w-2.5 h-2.5" /> : <PlusCircle className="w-2.5 h-2.5" />}
+                              {isDeleted ? 'Smazaná pokuta' : 'Zapsaná pokuta'}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 font-mono">
+                            {formattedDate} {formattedTime}
+                          </span>
+                        </div>
+
+                        <div className="mt-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="font-extrabold text-xs text-slate-900 group-hover:text-bento-accent transition-colors">
+                              {log.fineReason}
+                            </span>
+                            <span className={cn(
+                              "text-xs font-black shrink-0",
+                              log.isInKind ? "text-blue-600" : (isDeleted ? "text-rose-600 line-through" : "text-slate-800")
+                            )}>
+                              {log.isInKind
+                                ? `Věcná: ${log.itemOrTask || ''} (${log.quantity || 1}x)`
+                                : `${log.amount} ${getCurrencySymbol(group.currency)}`}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 font-medium mt-0.5 flex items-center justify-between">
+                            <span>Člen: <strong className="text-slate-900 font-bold">{log.memberName}</strong></span>
+                            <span className="text-[10px] text-slate-400 italic">
+                              {isDeleted ? `Smazal(a): ${log.createdByName}` : `Zapsal(a): ${log.createdByName}`}
+                            </span>
+                          </p>
+                        </div>
+
+                        {/* Expanded details (po rozkliknutí té historické akce) */}
+                        <AnimatePresence>
+                          {isSelected && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="mt-3 pt-3 border-t border-slate-200/80 text-xs space-y-2 bg-slate-900 text-white p-3 rounded-xl shadow-inner"
+                            >
+                              <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono pb-1 border-b border-slate-800">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-bento-accent" />
+                                  <span>{formattedDate} v {formattedTime}</span>
+                                </span>
+                                <span className="text-emerald-400 font-bold uppercase">{isDeleted ? 'Smazáno' : 'Zapsáno'}</span>
+                              </div>
+
+                              <div className="space-y-1.5">
+                                <div className="flex items-start gap-2">
+                                  <Mail className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+                                  <div className="flex flex-col">
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                      {isDeleted ? 'E-mail uživatele, který pokutu smazal:' : 'E-mail uživatele, který pokutu zapsal:'}
+                                    </span>
+                                    <span className="font-mono font-extrabold text-blue-300 text-[11px] select-all">
+                                      {log.createdByEmail}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <User className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                  <span className="text-[11px] text-slate-200">
+                                    <strong className="text-slate-400">Jméno:</strong> {log.createdByName}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <Tag className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                  <span className="text-[11px] text-slate-200">
+                                    <strong className="text-slate-400">Pro člena:</strong> {log.memberName}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <Shield className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                  <span className="text-[11px] text-slate-200">
+                                    <strong className="text-slate-400">Pokuta:</strong> {log.fineReason} {log.isInKind ? `(${log.itemOrTask}, ${log.quantity}x)` : `(${log.amount} ${getCurrencySymbol(group.currency)})`}
+                                  </span>
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="py-12 text-center text-slate-400 space-y-2">
+                    <History className="w-8 h-8 mx-auto text-slate-300" />
+                    <p className="text-xs font-bold text-slate-500">Zatím žádné záznamy v historii</p>
+                    <p className="text-[10px] text-slate-400">Jakmile zapíšete nebo smažete pokutu, objeví se zde.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 font-medium shrink-0">
+                <span>Kliknutím na záznam zobrazíte e-mail.</span>
+                <button
+                  type="button"
+                  onClick={() => setIsHistoryOpen(false)}
+                  className="px-3 py-1 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Schovat
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Trigger Button */}
+        <button
+          type="button"
+          onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+          className="flex items-center gap-2.5 px-5 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-full shadow-2xl hover:shadow-slate-900/40 border border-slate-700 transition-all active:scale-95 cursor-pointer group"
+          title={isHistoryOpen ? "Schovat historii pokut" : "Rozvinout historii zapisování pokut"}
+        >
+          <div className="relative">
+            <MessageSquare className="w-5 h-5 text-bento-accent group-hover:scale-110 transition-transform" />
+            {combinedHistory.length > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-rose-500 text-white text-[9px] font-black rounded-full flex items-center justify-center border-2 border-slate-900">
+                {combinedHistory.length > 99 ? '99+' : combinedHistory.length}
+              </span>
+            )}
+          </div>
+          <span className="text-xs font-bold tracking-wide">
+            {isHistoryOpen ? 'Schovat historii' : 'Historie pokut (chat)'}
+          </span>
+          {isHistoryOpen ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronUp className="w-4 h-4 text-slate-400" />}
+        </button>
       </div>
     </div>
   );

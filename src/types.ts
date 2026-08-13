@@ -102,6 +102,25 @@ export interface Fine {
   isFulfilledInKind?: boolean;
   fulfilledAt?: number;
   recurringFineId?: string;
+  createdByEmail?: string;
+  createdByName?: string;
+}
+
+export interface FineAuditLog {
+  id: string;
+  action: 'created' | 'deleted';
+  fineId?: string;
+  fineReason: string;
+  amount: number;
+  isInKind?: boolean;
+  itemOrTask?: string;
+  quantity?: number;
+  memberId?: string;
+  memberName: string;
+  createdAt: number;
+  createdByEmail: string;
+  createdByName: string;
+  createdByUid?: string;
 }
 
 export interface RecurringFine {

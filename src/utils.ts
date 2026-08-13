@@ -486,7 +486,24 @@ export async function checkAndExecuteRecurringFines(
               quantity: rf.quantity || 1,
               unitPrice: rf.unitPrice || rf.amount,
               unit: rf.unit || '',
-              recurringFineId: rf.id
+              recurringFineId: rf.id,
+              createdByEmail: 'automat@kasa.app',
+              createdByName: 'Automatická opakovaná pokuta'
+            });
+
+            const auditRef = doc(collection(db, `groups/${groupId}/periods/${periodId}/fineAuditLogs`));
+            batch.set(auditRef, {
+              action: 'created',
+              fineId: fineRef.id,
+              fineReason: `${rf.reason} (Automatická pokuta)`,
+              amount: rf.amount,
+              isInKind: false,
+              quantity: rf.quantity || 1,
+              memberId: mId,
+              memberName: 'Člen',
+              createdAt: timestamp,
+              createdByEmail: 'automat@kasa.app',
+              createdByName: 'Automatická opakovaná pokuta'
             });
           }
 
