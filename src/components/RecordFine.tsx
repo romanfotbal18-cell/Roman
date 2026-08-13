@@ -55,6 +55,7 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
   const [searchQuery, setSearchQuery] = useState('');
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [memberSortOption, setMemberSortOption] = useState<'name' | 'age-asc' | 'age-desc'>('name');
+  const [recordedNotice, setRecordedNotice] = useState<string | null>(null);
 
   const formatMemberAgeAndBirth = (birthDate?: string) => {
     if (!birthDate) return null;
@@ -299,13 +300,16 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
         await reconcileOverpaymentsForMember(db, group.id, period.id, memberId);
       }
 
-      setSelectedMemberIds([]);
+      // Keep members selected after recording fine as requested by user
+      const count = selectedMemberIds.length;
+      setRecordedNotice(`Pokuta byla úspěšně zapsána pro ${count} ${count === 1 ? 'člena' : (count >= 2 && count <= 4 ? 'členy' : 'členů')}! Členové zůstávají označeni.`);
+      setTimeout(() => setRecordedNotice(null), 5000);
+
       setSelectedTemplate(null);
       setCustomReason('');
       setCustomAmount('');
       setDynamicValue('');
       setFineCount(1);
-      setSearchQuery('');
       setTemplateSearchQuery('');
       onSuccess?.();
     } catch (error) {
@@ -499,12 +503,31 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
             <div className="w-1.5 h-1.5 rounded-full bg-bento-accent"></div>
             <h3 className="text-xs font-black uppercase tracking-[0.2em] text-bento-text-muted">Vyběr hříšníků</h3>
           </div>
-          <button 
-            onClick={() => setSelectedMemberIds(activeMembers.map(m => m.id))}
-            className="text-[10px] font-black text-bento-accent uppercase tracking-widest hover:bg-bento-accent/5 px-2 py-1 rounded-lg transition-all"
-          >
-            Označit vše
-          </button>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {selectedMemberIds.length > 0 && (
+              <button 
+                type="button"
+                onClick={() => {
+                  setSelectedMemberIds([]);
+                  setActiveGroupId(null);
+                }}
+                className="text-[10px] font-black text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200/60 px-2.5 py-1 rounded-lg transition-all uppercase tracking-widest flex items-center gap-1 cursor-pointer"
+                title="Zrušit označení všech členů"
+              >
+                <X className="w-3 h-3" />
+                Zrušit výběr ({selectedMemberIds.length})
+              </button>
+            )}
+            {selectedMemberIds.length < activeMembers.length && (
+              <button 
+                type="button"
+                onClick={() => setSelectedMemberIds(activeMembers.map(m => m.id))}
+                className="text-[10px] font-black text-bento-accent uppercase tracking-widest hover:bg-bento-accent/5 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+              >
+                Označit vše
+              </button>
+            )}
+          </div>
         </div>
         
         {/* Search Input & Sort Dropdown */}
@@ -1290,6 +1313,20 @@ export default function RecordFine({ group, period, onSuccess }: RecordFineProps
                   )}
                 </div>
               </div>
+
+              <AnimatePresence>
+                {recordedNotice && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold mb-4 flex items-center gap-2"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{recordedNotice}</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {isReadOnly && (
                 <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4 text-center flex items-center justify-center gap-2">
