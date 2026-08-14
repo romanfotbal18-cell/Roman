@@ -1,6 +1,6 @@
 import { auth } from './firebase';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, Firestore } from 'firebase/firestore';
-import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures, Payment } from './types';
+import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures, Payment, FineTemplate, GroupedFineCategory } from './types';
 
 export function isFeatureEnabled(group: Group | undefined, featureKey: keyof GroupEnabledFeatures): boolean {
   if (!group || !group.enabledFeatures) return true;
@@ -691,4 +691,123 @@ export async function redistributeEnvelopesOnSplitEnable(db: any, groupId: strin
   } catch (error) {
     console.error("Chyba při přerozdělování obálek při aktivaci rozšířené pokladny:", error);
   }
+}
+
+export function isFineAutomatic(f: Fine): boolean {
+  if (f.recurringFineId) return true;
+  if (f.createdByEmail === 'automat@kasa.app') return true;
+  if (f.createdByName === 'Automatická opakovaná pokuta') return true;
+  const reasonLower = (f.reason || '').toLowerCase();
+  if (
+    reasonLower.includes('automatická pokuta') ||
+    reasonLower.includes('aut. pokuty') ||
+    reasonLower.includes('(automatická') ||
+    reasonLower.includes('manuální spuštění aut. pokuty')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function groupFinesIntoCategories(
+  fines: Fine[],
+  templates: FineTemplate[] = []
+): GroupedFineCategory[] {
+  const categoryMap = new Map<string, GroupedFineCategory>();
+
+  fines.forEach(f => {
+    let catName = 'Vlastní zadání';
+    let isCustomCat = true;
+
+    // 1. Try templateId
+    if ((f as any).templateId) {
+      const t = templates.find(tmpl => tmpl.id === (f as any).templateId);
+      if (t) {
+        catName = t.name.trim();
+        isCustomCat = false;
+      }
+    }
+
+    // 2. Match reason against templates
+    if (isCustomCat && f.reason) {
+      const rawReason = f.reason.trim();
+      const cleanedReason = rawReason
+        .replace(/\s*\([^)]*\)/g, '')
+        .replace(/\s*-\s*.*$/g, '')
+        .trim();
+
+      const matchedTemplate = templates.find(tmpl => {
+        const tName = tmpl.name.trim().toLowerCase();
+        return (
+          cleanedReason.toLowerCase() === tName ||
+          rawReason.toLowerCase().startsWith(tName)
+        );
+      });
+
+      if (matchedTemplate) {
+        catName = matchedTemplate.name.trim();
+        isCustomCat = false;
+      }
+    }
+
+    // 3. Fallback to 'Vlastní zadání' if no template matched or custom
+    if (isCustomCat) {
+      catName = 'Vlastní zadání';
+    }
+
+    const isAuto = isFineAutomatic(f);
+    const amt = f.amount || 0;
+    const paid = f.paidAmount || 0;
+
+    let cat = categoryMap.get(catName);
+    if (!cat) {
+      cat = {
+        categoryName: catName,
+        isCustomCategory: isCustomCat,
+        totalCount: 0,
+        totalAmount: 0,
+        totalPaidAmount: 0,
+        manualCount: 0,
+        manualAmount: 0,
+        autoCount: 0,
+        autoAmount: 0,
+        fines: []
+      };
+      categoryMap.set(catName, cat);
+    }
+
+    cat.totalCount += 1;
+    cat.totalAmount += amt;
+    cat.totalPaidAmount += paid;
+    if (isAuto) {
+      cat.autoCount += 1;
+      cat.autoAmount += amt;
+    } else {
+      cat.manualCount += 1;
+      cat.manualAmount += amt;
+    }
+    cat.fines.push(f);
+  });
+
+  // Generate customReasonBreakdown for 'Vlastní zadání'
+  const resultList = Array.from(categoryMap.values()).map(cat => {
+    if (cat.isCustomCategory) {
+      const subMap = new Map<string, { reason: string; count: number; amount: number; manualCount: number; autoCount: number }>();
+      cat.fines.forEach(f => {
+        const r = f.reason ? f.reason.trim() : 'Vlastní pokuta';
+        const isAuto = isFineAutomatic(f);
+        const amt = f.amount || 0;
+        const sub = subMap.get(r) || { reason: r, count: 0, amount: 0, manualCount: 0, autoCount: 0 };
+        sub.count += 1;
+        sub.amount += amt;
+        if (isAuto) sub.autoCount += 1;
+        else sub.manualCount += 1;
+        subMap.set(r, sub);
+      });
+      cat.customReasonBreakdown = Array.from(subMap.values()).sort((a, b) => b.count - a.count);
+    }
+    return cat;
+  });
+
+  return resultList.sort((a, b) => b.totalCount - a.totalCount);
 }

@@ -106,6 +106,26 @@ export interface Fine {
   createdByName?: string;
 }
 
+export interface GroupedFineCategory {
+  categoryName: string;
+  isCustomCategory: boolean;
+  totalCount: number;
+  totalAmount: number;
+  totalPaidAmount: number;
+  manualCount: number;
+  manualAmount: number;
+  autoCount: number;
+  autoAmount: number;
+  fines: Fine[];
+  customReasonBreakdown?: Array<{
+    reason: string;
+    count: number;
+    amount: number;
+    manualCount: number;
+    autoCount: number;
+  }>;
+}
+
 export interface FineAuditLog {
   id: string;
   action: 'created' | 'deleted';

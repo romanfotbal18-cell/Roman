@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, query, onSnapshot, getDocs, limit, orderBy, doc, updateDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled, checkAndExecuteRecurringFines, getRecurringFineOccurrencesInRange } from '../utils';
+import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn, getUserRole, reconcileOverpaymentsForMember, isFeatureEnabled, checkAndExecuteRecurringFines, getRecurringFineOccurrencesInRange, groupFinesIntoCategories, isFineAutomatic } from '../utils';
 import ExportFinanceModal from './ExportFinanceModal';
 import { 
   TrendingUp, 
@@ -63,7 +63,7 @@ import {
   Bar,
   Legend
 } from 'recharts';
-import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal, Envelope, RecurringFine } from '../types';
+import { Group, Period, Transaction, Fine, OperationType, Member, Payment, Event, Goal, Envelope, RecurringFine, FineTemplate, GroupedFineCategory } from '../types';
 
 interface DashboardProps {
   group: Group;
@@ -90,8 +90,10 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
   const [payments, setPayments] = useState<Payment[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [recurringFines, setRecurringFines] = useState<RecurringFine[]>([]);
+  const [fineTemplates, setFineTemplates] = useState<FineTemplate[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
+  const [selectedViolationCategory, setSelectedViolationCategory] = useState<GroupedFineCategory | null>(null);
   const [dashboardCardView, setDashboardCardView] = useState<'goals' | 'envelopes'>(() => {
     return (localStorage.getItem(`dashboard_card_view_${group.id}`) as 'goals' | 'envelopes') || 'goals';
   });
@@ -215,6 +217,14 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       handleFirestoreError(error, OperationType.LIST, rfPath);
     });
 
+    const templatesPath = `groups/${group.id}/periods/${period.id}/fineTemplates`;
+    const unsubTemplates = onSnapshot(collection(db, templatesPath), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FineTemplate));
+      setFineTemplates(data);
+    }, (error) => {
+      console.warn('[Dashboard] fineTemplates snapshot error:', error);
+    });
+
     checkAndExecuteRecurringFines(db, group.id, period.id);
 
     return () => {
@@ -226,6 +236,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       unsubGoals();
       unsubEnvelopes();
       unsubRecurring();
+      unsubTemplates();
       unsubPeriod();
     };
   }, [group.id, period.id]);
@@ -673,23 +684,17 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 3);
 
-    // 3. Most Frequent Violations (Pie Chart)
-    const violationsByReason: Record<string, number> = {};
+    // 3. Most Frequent Violations (Katalog hříchů - Sloučení dle typu prohřešku)
     const violationsReset = Math.max(currentPeriod.violationsResetAt || 0, globalReset);
-    
-    fines
-      .filter(f => f.createdAt > violationsReset)
-      .forEach(f => {
-        const unpaid = f.amount - (f.paidAmount || 0);
-        if (unpaid > 0) {
-          const reason = f.reason || 'Bez popisu';
-          violationsByReason[reason] = (violationsByReason[reason] || 0) + 1;
-        }
-      });
-    const violationChartData = Object.entries(violationsByReason)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5); 
+    const periodFines = fines.filter(f => f.createdAt > violationsReset);
+
+    const groupedCategories = groupFinesIntoCategories(periodFines, fineTemplates);
+
+    const violationChartData = groupedCategories.map(cat => ({
+      name: cat.categoryName,
+      value: cat.totalCount,
+      amount: cat.totalAmount
+    })); 
 
     // 4. Monthly Top Fined
     const monthlyData: Record<string, Record<string, number>> = {};
@@ -764,8 +769,8 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
       ? [...streaks].sort((a, b) => b.bestStreakDays - a.bestStreakDays)[0]
       : null;
 
-    return { topSponsors, topDebtors, violationChartData, monthlyLeaderboard, lastMonthLeader, lastMonthRank, streaks, overallChampion };
-  }, [fines, payments, members, currentPeriod]);
+    return { topSponsors, topDebtors, groupedCategories, violationChartData, monthlyLeaderboard, lastMonthLeader, lastMonthRank, streaks, overallChampion };
+  }, [fines, payments, members, fineTemplates, currentPeriod]);
 
   const calculateDaysRemaining = (dateStr: string) => {
     const today = new Date();
@@ -1722,49 +1727,128 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
           )}
 
           {activeStatView === 'violations' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
-              <div className="h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={statsData.violationChartData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={65}
-                      outerRadius={85}
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {statsData.violationChartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'][index % 5]} />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                      itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="space-y-4">
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-100">
                 <div>
-                  <h4 className="text-lg font-black text-indigo-600 uppercase tracking-tight">Katalog hříchů</h4>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Za co se u vás platí nejvíce?</p>
+                  <h4 className="text-lg font-black text-indigo-600 uppercase tracking-tight flex items-center gap-2">
+                    <span>Katalog hříchů</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-extrabold normal-case border border-indigo-100">
+                      Souhrnný přehled prohřešků
+                    </span>
+                  </h4>
+                  <p className="text-[11px] font-medium text-slate-500 mt-0.5">
+                    Pokuty jsou sloučeny dle typu (bez rozdělení na konkrétní časy či poznámky). Kliknutím na řádek zobrazíte detail, celkovou částku a rozdělení na ruční vs. automatické zápisy.
+                  </p>
                 </div>
-                <div className="space-y-2">
-                  {statsData.violationChartData.map((item, idx) => (
-                    <div key={idx} className="flex justify-between items-center p-2 rounded-xl hover:bg-slate-50 transition-all">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'][idx % 5] }}></div>
-                        <span className="text-xs font-bold text-bento-text-main truncate max-w-[150px]">{item.name}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded uppercase">{item.value}x</span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Donut Chart */}
+                <div className="lg:col-span-5 bg-slate-50/70 p-4 rounded-3xl border border-slate-100 flex flex-col items-center justify-center min-h-[280px]">
+                  {statsData.violationChartData.length > 0 ? (
+                    <div className="w-full h-[250px] relative">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={statsData.violationChartData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={85}
+                            paddingAngle={4}
+                            dataKey="value"
+                          >
+                            {statsData.violationChartData.map((entry, index) => (
+                              <Cell
+                                key={`cell-${index}`}
+                                fill={['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#14b8a6'][index % 7]}
+                              />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            formatter={(value: any, name: any, props: any) => [
+                              `${value}x pokuta (${formatCurrency(props.payload.amount || 0, group.currency)})`,
+                              name
+                            ]}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px -5px rgb(0 0 0 / 0.1)' }}
+                            itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
+                        <span className="text-2xl font-black text-slate-900">
+                          {statsData.groupedCategories.reduce((s, c) => s + c.totalCount, 0)}x
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          Celkem pokut
+                        </span>
                       </div>
                     </div>
-                  ))}
-                  {statsData.violationChartData.length === 0 && (
-                     <p className="text-xs text-slate-300 italic py-4">Zatím nebyly zapsány žádné pokuty.</p>
+                  ) : (
+                    <div className="text-center py-10 text-slate-300">
+                      <ReceiptText className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      <p className="text-xs font-bold text-slate-400">Žádné zapsané pokuty v tomto období.</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Categories List Cards */}
+                <div className="lg:col-span-7 space-y-2.5">
+                  {statsData.groupedCategories.map((cat, idx) => {
+                    const color = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#14b8a6'][idx % 7];
+                    return (
+                      <div
+                        key={cat.categoryName}
+                        onClick={() => setSelectedViolationCategory(cat)}
+                        className="p-4 bg-white hover:bg-slate-50/80 border border-slate-100 hover:border-indigo-200 rounded-2xl shadow-2xs hover:shadow-md transition-all cursor-pointer flex items-center justify-between group"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0 pr-2">
+                          <div
+                            className="w-3.5 h-3.5 rounded-full shrink-0 shadow-xs"
+                            style={{ backgroundColor: color }}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h5 className="text-sm font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors truncate">
+                                {cat.categoryName}
+                              </h5>
+                              {cat.isCustomCategory && (
+                                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 shrink-0">
+                                  Souhrn vlastních
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 font-medium mt-0.5 flex items-center gap-2">
+                              <span>
+                                Zapsáno: <strong className="text-slate-800 font-bold">{cat.totalCount}x</strong>
+                              </span>
+                              <span>•</span>
+                              <span>
+                                Ruční: <strong className="text-slate-700">{cat.manualCount}x</strong> | Aut: <strong className="text-slate-700">{cat.autoCount}x</strong>
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="text-right">
+                            <span className="text-sm font-black text-slate-900 block">
+                              {formatCurrency(cat.totalAmount, group.currency)}
+                            </span>
+                            <span className="text-[10px] font-bold text-indigo-600 group-hover:underline flex items-center justify-end gap-0.5">
+                              <span>Otevřít detail</span>
+                              <ChevronRight className="w-3 h-3" />
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {statsData.groupedCategories.length === 0 && (
+                    <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                      <p className="text-xs font-bold text-slate-500">Zatím nebyly zapsány žádné pokuty v tomto období.</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -2643,6 +2727,208 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                     </button>
                   </div>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Category Detail Modal (Katalog hříchů detail) */}
+      <AnimatePresence>
+        {selectedViolationCategory && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden text-slate-800"
+            >
+              {/* Header */}
+              <div className="bg-slate-900 text-white p-6 flex items-center justify-between shrink-0">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      Detail prohřešku • Katalog hříchů
+                    </span>
+                    {selectedViolationCategory.isCustomCategory && (
+                      <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        Vlastní zadání
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-xl font-black tracking-tight text-white">
+                    {selectedViolationCategory.categoryName}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedViolationCategory(null)}
+                  className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Content Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                {/* Top Metrics Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="bg-indigo-50/70 border border-indigo-100 p-4 rounded-2xl">
+                    <span className="text-[10px] font-black text-indigo-600 uppercase tracking-wider block mb-1">
+                      Celková hodnota (Pomohlo vybrat)
+                    </span>
+                    <span className="text-2xl font-black text-indigo-950 block">
+                      {formatCurrency(selectedViolationCategory.totalAmount, group.currency)}
+                    </span>
+                    <span className="text-[11px] font-bold text-indigo-700/80 mt-1 block">
+                      Zaplaceno: {formatCurrency(selectedViolationCategory.totalPaidAmount, group.currency)}
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/80 p-4 rounded-2xl">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1">
+                      Celkový počet zápisů
+                    </span>
+                    <span className="text-2xl font-black text-slate-900 block">
+                      {selectedViolationCategory.totalCount}x
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-500 mt-1 block">
+                      Všech zapsaných pokut v téhle kategorii
+                    </span>
+                  </div>
+                </div>
+
+                {/* Manual vs Automatic Split */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs space-y-3">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
+                    Rozdělení na ruční a automatické zápisy
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Manual */}
+                    <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-700 text-sm font-bold">
+                          🖐️
+                        </div>
+                        <div>
+                          <span className="text-xs font-extrabold text-slate-900 block">
+                            Ruční zápisy
+                          </span>
+                          <span className="text-[10px] text-emerald-800 font-bold">
+                            Počet: {selectedViolationCategory.manualCount}x
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-sm font-black text-emerald-900">
+                        {formatCurrency(selectedViolationCategory.manualAmount, group.currency)}
+                      </span>
+                    </div>
+
+                    {/* Automatic */}
+                    <div className="p-3.5 rounded-xl bg-purple-50/60 border border-purple-100 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center text-purple-700 text-sm font-bold">
+                          🤖
+                        </div>
+                        <div>
+                          <span className="text-xs font-extrabold text-slate-900 block">
+                            Automatické zápisy
+                          </span>
+                          <span className="text-[10px] text-purple-800 font-bold">
+                            Počet: {selectedViolationCategory.autoCount}x
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-sm font-black text-purple-900">
+                        {formatCurrency(selectedViolationCategory.autoAmount, group.currency)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Breakdown for Vlastní zadání */}
+                {selectedViolationCategory.isCustomCategory && selectedViolationCategory.customReasonBreakdown && (
+                  <div className="bg-amber-50/50 border border-amber-200/80 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-amber-900">
+                        Rozpis konkrétních vlastních prohřešků
+                      </h4>
+                      <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md">
+                        {selectedViolationCategory.customReasonBreakdown.length} typů
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {selectedViolationCategory.customReasonBreakdown.map((item, i) => (
+                        <div key={i} className="p-3 bg-white rounded-xl border border-amber-100 flex items-center justify-between">
+                          <div>
+                            <span className="text-xs font-extrabold text-slate-900 block">
+                              {item.reason}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              Zapsáno: <strong className="text-slate-800 font-bold">{item.count}x</strong> (Ruční: {item.manualCount}x, Aut: {item.autoCount}x)
+                            </span>
+                          </div>
+                          <span className="text-xs font-black text-amber-900">
+                            {formatCurrency(item.amount, group.currency)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Individual Fines List */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
+                    Seznam konkrétních pokut v této kategorii ({selectedViolationCategory.fines.length})
+                  </h4>
+                  <div className="space-y-2 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                    {selectedViolationCategory.fines.map((f) => {
+                      const member = members.find(m => m.id === f.memberId);
+                      const isAuto = isFineAutomatic(f);
+                      const dateStr = new Date(f.createdAt).toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric' });
+
+                      return (
+                        <div key={f.id} className="p-3 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200/80 flex items-center justify-between transition-colors">
+                          <div className="min-w-0 pr-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black text-slate-900 truncate">
+                                {member?.name || 'Člen'}
+                              </span>
+                              <span className={cn(
+                                "text-[9px] font-black uppercase px-2 py-0.5 rounded-md shrink-0 flex items-center gap-1",
+                                isAuto ? "bg-purple-100 text-purple-800" : "bg-emerald-100 text-emerald-800"
+                              )}>
+                                {isAuto ? '🤖 Automatická' : '🖐️ Ruční'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 font-medium mt-0.5">
+                              {f.reason} • <span className="text-slate-400 font-mono text-[10px]">{dateStr}</span>
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="text-xs font-black text-slate-900 block">
+                              {f.type === 'in_kind' || f.isInKind
+                                ? `Věcná: ${f.itemOrTask || f.unit || 'položka'} (${f.quantity || 1}x)`
+                                : formatCurrency(f.amount, group.currency)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedViolationCategory(null)}
+                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-extrabold text-xs transition-colors cursor-pointer"
+                >
+                  Zavřít detail
+                </button>
               </div>
             </motion.div>
           </div>

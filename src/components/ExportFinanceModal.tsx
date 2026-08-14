@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Group, Period, Member, Fine, Transaction, Payment, Goal, Envelope, MemberGroup } from '../types';
-import { formatCurrency, getCurrencySymbol, formatDate, cn } from '../utils';
-import { X, FileSpreadsheet, Download, Loader2, Calendar, Target, Folder, Award, Users, ReceiptText, Wallet, Check, Copy, Flame, PieChart, Sparkles, AlertTriangle, UserCheck, UserX, Search, CheckSquare, Square, Filter } from 'lucide-react';
+import { formatCurrency, getCurrencySymbol, formatDate, cn, groupFinesIntoCategories } from '../utils';
+import { X, FileSpreadsheet, Download, Loader2, Calendar, Target, Folder, Award, Users, ReceiptText, Wallet, Check, Copy, Flame, PieChart, Sparkles, AlertTriangle, UserCheck, UserX, Search, CheckSquare, Square, Filter, QrCode, Building2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 
@@ -287,16 +287,14 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     .sort((a, b) => b.unpaidDebt - a.unpaidDebt)
     .slice(0, 5);
 
-  // 3. Nejčastější prohřešky za celé období
-  const reasonCounts = new Map<string, { count: number; totalAmount: number }>();
-  fines.forEach(f => {
-    const key = f.reason.trim() || 'Nespecifikovaný důvod';
-    const curr = reasonCounts.get(key) || { count: 0, totalAmount: 0 };
-    reasonCounts.set(key, { count: curr.count + 1, totalAmount: curr.totalAmount + f.amount });
-  });
-  const topViolationsList = Array.from(reasonCounts.entries())
-    .map(([reason, stat]) => ({ reason, count: stat.count, totalAmount: stat.totalAmount }))
-    .sort((a, b) => b.count - a.count)
+  // 3. Nejčastější prohřešky za celé období (Sloučeno dle typu prohřešku)
+  const groupedCatsForExport = groupFinesIntoCategories(fines);
+  const topViolationsList = groupedCatsForExport
+    .map(cat => ({
+      reason: cat.categoryName,
+      count: cat.totalCount,
+      totalAmount: cat.totalAmount
+    }))
     .slice(0, 5);
 
   // Date range label
@@ -609,19 +607,122 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                 </div>
               </div>
 
-              <div className="pdf-card" style={{ marginTop: '14px', padding: '14px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box', width: '100%', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+              <div className="pdf-card" style={{ marginTop: '12px', padding: '12px 14px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box', width: '100%', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
                 <div>
                   <p style={{ fontSize: '10px', fontWeight: 700, color: '#312e81', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>Aktuální čistý zůstatek v pokladně</p>
-                  <p style={{ fontSize: '20px', fontWeight: 900, color: '#4338ca', margin: '3px 0 0 0' }}>{formatCurrency(cashboxBalance, group.currency)}</p>
+                  <p style={{ fontSize: '20px', fontWeight: 900, color: '#4338ca', margin: '2px 0 0 0' }}>{formatCurrency(cashboxBalance, group.currency)}</p>
                 </div>
-                {group.bankAccount && (
-                  <div style={{ textAlign: 'right', fontSize: '10px' }}>
-                    <p style={{ fontWeight: 700, color: '#334155', margin: 0 }}>Bankovní spojení kasy:</p>
-                    <p style={{ fontFamily: 'monospace', fontWeight: 700, color: '#0f172a', margin: '2px 0 0 0' }}>{group.bankAccount}</p>
-                    {group.bankVS && <p style={{ fontSize: '9px', color: '#475569', margin: '2px 0 0 0' }}>VS: {group.bankVS}</p>}
-                  </div>
-                )}
+                <div style={{ textAlign: 'right' }}>
+                  <p style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', margin: 0 }}>Stav kasy týmu</p>
+                  <p style={{ fontSize: '11px', fontWeight: 800, color: '#1e1b4b', margin: '2px 0 0 0' }}>Vyhotoveno {new Date().toLocaleDateString('cs-CZ')}</p>
+                </div>
               </div>
+
+              {/* Bank Details & QR Payment Box */}
+              {(group.bankAccount || group.bankQrCodeUrl) && (
+                <div 
+                  className="pdf-card" 
+                  style={{ 
+                    marginTop: '12px', 
+                    padding: '14px 16px', 
+                    backgroundColor: '#ffffff', 
+                    border: '1.5px solid #cbd5e1', 
+                    borderRadius: '12px', 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    boxSizing: 'border-box', 
+                    width: '100%', 
+                    pageBreakInside: 'avoid', 
+                    breakInside: 'avoid',
+                    gap: '16px'
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                      <p style={{ fontSize: '11px', fontWeight: 900, color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+                        Bankovní spojení pro úhrady pokut
+                      </p>
+                      {group.bankName && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: '#334155', backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0', padding: '2px 6px', borderRadius: '4px' }}>
+                          {group.bankName}
+                        </span>
+                      )}
+                    </div>
+
+                    {group.bankAccount && (
+                      <div style={{ marginBottom: '8px' }}>
+                        <p style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', margin: 0 }}>
+                          Číslo bankovního účtu:
+                        </p>
+                        <p style={{ fontFamily: 'monospace', fontSize: '15px', fontWeight: 900, color: '#0f172a', margin: '2px 0 0 0', letterSpacing: '0.03em' }}>
+                          {group.bankAccount}
+                        </p>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                      {group.bankVS && (
+                        <div>
+                          <p style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', margin: 0 }}>
+                            Variabilní symbol (VS):
+                          </p>
+                          <p style={{ fontFamily: 'monospace', fontSize: '12px', fontWeight: 800, color: '#0f172a', margin: '1px 0 0 0' }}>
+                            {group.bankVS}
+                          </p>
+                        </div>
+                      )}
+                      {group.bankNote && (
+                        <div style={{ maxWidth: '240px' }}>
+                          <p style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', margin: 0 }}>
+                            Zpráva pro příjemce:
+                          </p>
+                          <p style={{ fontSize: '10px', color: '#334155', fontStyle: 'italic', margin: '1px 0 0 0', wordBreak: 'break-word' }}>
+                            {group.bankNote}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <p style={{ fontSize: '9px', color: '#64748b', margin: '6px 0 0 0', lineHeight: 1.35 }}>
+                      {group.bankQrCodeUrl 
+                        ? 'Naskenujte přiložený QR kód ve vaší bankovní aplikaci pro okamžité a přesné předvyplnění platby.'
+                        : 'Při bezhotovostní platbě na účet vždy uveďte své jméno do zprávy pro příjemce.'}
+                    </p>
+                  </div>
+
+                  {group.bankQrCodeUrl && (
+                    <div 
+                      style={{ 
+                        textAlign: 'center', 
+                        flexShrink: 0, 
+                        padding: '8px', 
+                        backgroundColor: '#ffffff', 
+                        border: '1.5px solid #0f172a', 
+                        borderRadius: '10px',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.06)'
+                      }}
+                    >
+                      <img
+                        src={group.bankQrCodeUrl}
+                        alt="QR Platba"
+                        crossOrigin="anonymous"
+                        style={{ 
+                          width: '145px', 
+                          height: '145px', 
+                          objectFit: 'contain', 
+                          display: 'block', 
+                          margin: '0 auto',
+                          backgroundColor: '#ffffff'
+                        }}
+                      />
+                      <p style={{ fontSize: '9px', fontWeight: 900, color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '5px 0 0 0' }}>
+                        QR Platba kasy
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -758,6 +859,20 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                   ))}
                 </tbody>
               </table>
+
+              {/* Member Balances bank prompt if there are debts */}
+              {totalUnpaidFines > 0 && (group.bankAccount || group.bankQrCodeUrl) && (
+                <div className="pdf-card pdf-no-break" style={{ marginTop: '14px', padding: '10px 14px', backgroundColor: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '10px', color: '#475569', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                  <span>
+                    Pro bezhotovostní úhradu dluhů využijte bankovní účet: <strong style={{ fontFamily: 'monospace', color: '#0f172a' }}>{group.bankAccount || 'kasy'}</strong> {group.bankVS ? `(VS: ${group.bankVS})` : ''}.
+                  </span>
+                  {group.bankQrCodeUrl && (
+                    <span style={{ fontWeight: 700, color: '#4338ca' }}>
+                      QR kód k platbě naleznete na úvodní straně výkazu.
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1383,6 +1498,36 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                   </div>
                 </div>
               </div>
+
+              {/* Bank & QR inclusion note */}
+              {(group.bankAccount || group.bankQrCodeUrl) && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold shrink-0">
+                      <QrCode className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>Bankovní spojení & QR platba</span>
+                        {group.bankQrCodeUrl && (
+                          <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-800 text-[10px] font-extrabold rounded">Fotka QR kódu aktivní</span>
+                        )}
+                      </p>
+                      <p className="text-[11px] text-slate-500 font-medium">
+                        {group.bankAccount ? `Účet: ${group.bankAccount}` : 'Bankovní spojení'}
+                        {group.bankQrCodeUrl ? ' • Velký skenovatelný QR kód bude vložen do PDF' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  {group.bankQrCodeUrl && (
+                    <img 
+                      src={group.bankQrCodeUrl} 
+                      alt="QR kód" 
+                      className="w-10 h-10 object-contain rounded-lg border border-slate-200 bg-white shrink-0 p-0.5" 
+                    />
+                  )}
+                </div>
+              )}
 
               {/* Export Action Buttons */}
               <div className="pt-2 border-t border-slate-100 space-y-3">
