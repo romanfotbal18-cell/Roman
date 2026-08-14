@@ -1037,7 +1037,7 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
                 {envelopes.map((env) => {
                   const envType = env.type || 'virtual';
                   const hasTarget = env.targetAmount && env.targetAmount > 0;
@@ -1046,12 +1046,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                     <div
                       key={env.id}
                       onClick={() => onNavigate('cashbox')}
-                      className="p-3 bg-slate-50 hover:bg-purple-50/50 border border-slate-200 hover:border-purple-200 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-1.5"
+                      className="p-2.5 bg-slate-50 hover:bg-purple-50/50 border border-slate-200 hover:border-purple-200 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-1"
                     >
                       <div className="flex items-start justify-between gap-1">
-                        <div>
+                        <div className="min-w-0 pr-1">
                           <span className="text-xs font-extrabold text-slate-800 line-clamp-1">{env.name}</span>
-                          <span className="text-[9px] font-bold text-slate-400 block -mt-0.5">
+                          <span className="text-[8px] font-bold text-slate-400 block -mt-0.5">
                             {envType === 'cash' ? '💵 Hotovostní' : envType === 'bank' ? '🏦 Na účtu' : '🌐 Klasická'}
                           </span>
                         </div>
@@ -1063,12 +1063,12 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                       </div>
 
                       {hasTarget ? (
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-[9px] text-slate-500 font-bold">
+                        <div className="space-y-0.5">
+                          <div className="flex justify-between text-[8px] text-slate-500 font-bold">
                             <span>Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
                             <span>{percent}%</span>
                           </div>
-                          <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                          <div className="w-full bg-slate-200 rounded-full h-1 overflow-hidden">
                             <div
                               className="bg-purple-600 h-full rounded-full transition-all duration-300"
                               style={{ width: `${percent}%` }}
@@ -1076,13 +1076,15 @@ export default function Dashboard({ group, period, onNavigate, onOpenQuickAction
                           </div>
                         </div>
                       ) : (
-                        <p className="text-[10px] text-slate-400 line-clamp-1 italic">
-                          {env.note || 'Volná obálka'}
-                        </p>
+                        env.note ? (
+                          <p className="text-[9px] text-slate-400 line-clamp-1 italic">
+                            {env.note}
+                          </p>
+                        ) : null
                       )}
 
                       {env.targetDate && (
-                        <div className="text-[9px] font-semibold text-indigo-600 pt-0.5">
+                        <div className="text-[8px] font-semibold text-indigo-600">
                           📅 Do {new Date(env.targetDate).toLocaleDateString('cs-CZ')}
                         </div>
                       )}

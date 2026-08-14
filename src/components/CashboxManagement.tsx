@@ -1262,11 +1262,11 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                     <div
                       key={env.id}
                       className={cn(
-                        "rounded-2xl p-3 border flex flex-col justify-between space-y-1.5 aspect-[1/0.95] sm:aspect-square min-h-[170px] transition-all shadow-2xs hover:shadow-xs overflow-hidden",
+                        "rounded-xl p-2.5 sm:p-3 border flex flex-col justify-between space-y-1 sm:space-y-1.5 transition-all shadow-2xs hover:shadow-xs overflow-hidden",
                         theme.cardBg
                       )}
                     >
-                      <div className="space-y-1.5 min-w-0">
+                      <div className="space-y-1 sm:space-y-1.5 min-w-0">
                         <div className="flex items-center justify-between gap-1">
                           <span className={cn("px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center gap-0.5 shrink-0", theme.badgeBg)}>
                             <span>
@@ -1278,17 +1278,17 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                             </span>
                           </span>
                           {!isReadOnly && (
-                            <div className="flex items-center gap-0.5 shrink-0">
+                            <div className="flex items-center gap-0.5 shrink-0 -mr-1">
                               <button
                                 onClick={() => handleOpenEditEnvelope(env)}
-                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-md transition-all"
+                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white/80 rounded-md transition-all"
                                 title="Upravit obálku"
                               >
                                 <Edit2 className="w-3 h-3" />
                               </button>
                               <button
                                 onClick={() => setDeleteEnvelopeConfirmId(env.id)}
-                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-md transition-all"
+                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white/80 rounded-md transition-all"
                                 title="Smazat obálku"
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -1297,25 +1297,25 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                           )}
                         </div>
 
-                        <div>
+                        <div className="min-w-0">
                           <h4 className="font-extrabold text-slate-900 text-xs sm:text-sm leading-tight truncate">{env.name}</h4>
                           {env.note && (
-                            <p className="text-[10px] text-slate-500 truncate mt-0.5">{env.note}</p>
+                            <p className="text-[9px] sm:text-[10px] text-slate-500 truncate mt-0.5">{env.note}</p>
                           )}
                         </div>
 
-                        <div>
-                          <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
+                        <div className="pt-0.5">
+                          <span className="text-[7px] sm:text-[8px] font-bold uppercase tracking-wider text-slate-400 block -mb-0.5">
                             Uloženo
                           </span>
-                          <p className={cn("text-base sm:text-lg font-black tracking-tight font-mono truncate", theme.accentText)}>
+                          <p className={cn("text-sm sm:text-base font-black tracking-tight font-mono truncate", theme.accentText)}>
                             {formatCurrency(env.amount, group.currency)}
                           </p>
                         </div>
 
                         {hasTarget && (
                           <div className="space-y-0.5">
-                            <div className="flex items-center justify-between text-[9px] font-bold text-slate-600">
+                            <div className="flex items-center justify-between text-[8px] sm:text-[9px] font-bold text-slate-600">
                               <span className="truncate">Cíl: {formatCurrency(env.targetAmount!, group.currency)}</span>
                               <span className="shrink-0">{percent}%</span>
                             </div>
@@ -1329,14 +1329,14 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                         )}
 
                         {env.targetDate && (
-                          <div className="flex items-center justify-between text-[9px] pt-1 border-t border-slate-200/60 font-medium text-slate-500">
-                            <span className="flex items-center gap-0.5 font-semibold text-slate-600 text-[9px] truncate">
+                          <div className="flex items-center justify-between text-[8px] sm:text-[9px] pt-1 border-t border-slate-200/60 font-medium text-slate-500">
+                            <span className="flex items-center gap-0.5 font-semibold text-slate-600 text-[8px] sm:text-[9px] truncate">
                               <Calendar className="w-2.5 h-2.5 text-indigo-500 shrink-0" />
                               <span>{new Date(env.targetDate).toLocaleDateString('cs-CZ')}</span>
                             </span>
                             {remainingText && (
                               <span className={cn(
-                                "px-1 py-0.2 rounded-md font-bold text-[8px] shrink-0",
+                                "px-1 py-0.2 rounded-md font-bold text-[7px] sm:text-[8px] shrink-0",
                                 remainingText === 'Termín vypršel'
                                   ? "bg-rose-100 text-rose-800"
                                   : "bg-indigo-100 text-indigo-800"
@@ -1352,22 +1352,22 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                         <div className="pt-1.5 border-t border-slate-200/60 flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => handleOpenTransferModal(env, 'deposit')}
-                            className="flex-1 py-1 px-1 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs"
+                            className="flex-1 py-0.5 sm:py-1 px-1 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-[9px] sm:text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs"
                           >
-                            <Plus className="w-3 h-3" />
+                            <Plus className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                             <span>Vložit</span>
                           </button>
                           <button
                             onClick={() => handleOpenTransferModal(env, 'withdraw')}
                             disabled={env.amount <= 0}
                             className={cn(
-                              "flex-1 py-1 px-1 bg-white border rounded-lg font-bold text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs",
+                              "flex-1 py-0.5 sm:py-1 px-1 bg-white border rounded-lg font-bold text-[9px] sm:text-[10px] flex items-center justify-center gap-0.5 transition-all shadow-2xs",
                               env.amount <= 0
                                 ? "opacity-50 cursor-not-allowed border-slate-200 text-slate-400"
                                 : "hover:bg-amber-50 text-amber-700 border-amber-200"
                             )}
                           >
-                            <TrendingDown className="w-3 h-3" />
+                            <TrendingDown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                             <span>Vybrat</span>
                           </button>
                         </div>
