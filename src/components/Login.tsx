@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { LogIn, Wallet, AlertCircle, HelpCircle, Loader2, Info, User } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { LogIn, Wallet, AlertCircle, HelpCircle, Loader2, Info, User, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { signInWithGoogle, signInAsGuest } from '../firebase';
 
@@ -7,6 +7,15 @@ export default function Login() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<{ code: string; message: string; hostname?: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const joinParam = params.get('join');
+    if (joinParam) {
+      setJoinCode(joinParam);
+    }
+  }, []);
 
   const handleLoginPopup = async () => {
     try {
@@ -68,9 +77,31 @@ export default function Login() {
         <h1 className="text-3xl font-black mb-2 tracking-tight uppercase text-slate-900 dark:text-white">
           Týmová Pokladna
         </h1>
-        <p className="text-slate-500 dark:text-slate-400 text-sm mb-8">
+        <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
           Transparentní správa týmových financí, pokut a výdajů na jednom místě.
         </p>
+
+        {joinCode && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/80 rounded-2xl text-left"
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-600 text-white rounded-xl shrink-0 mt-0.5">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-black text-blue-950 dark:text-blue-100 uppercase tracking-wider">
+                  Byli jste pozváni ke sledování kasy
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-medium">
+                  Kód pro vstup: <span className="font-mono font-bold bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">{joinCode}</span>. Přihlaste se níže a budete ihned přesměrováni.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         <AnimatePresence mode="wait">
           {error && (

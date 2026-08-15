@@ -6,7 +6,8 @@
       "type": "object",
       "properties": {
         "name": { "type": "string" },
-        "ownerId": { "type": "string" }
+        "ownerId": { "type": "string" },
+        "shareCode": { "type": "string", "description": "Short code used for quick reader access." }
       },
       "required": ["name", "ownerId"]
     },

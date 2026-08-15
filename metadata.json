@@ -2,5 +2,5 @@
   "name": "Týmová pokladna (hlavní projekt)",
   "description": "Hierarchický systém pro správu týmových financí, pokut a výdajů s důrazem na transparentnost a přehlednost.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

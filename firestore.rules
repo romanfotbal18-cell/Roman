@@ -70,7 +70,7 @@ service cloud.firestore {
     // --- Groups ---
     match /groups/{groupId} {
       allow list: if isSignedIn();
-      allow get: if isUserInGroupData(resource.data);
+      allow get: if isSignedIn();
       
       allow create: if isSignedIn() 
                     && incoming().ownerId == request.auth.uid 

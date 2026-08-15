@@ -22,6 +22,7 @@ export interface Group {
   id: string;
   name: string;
   ownerId: string;
+  shareCode?: string;
   currency?: string;
   bankAccount?: string;
   bankName?: string;

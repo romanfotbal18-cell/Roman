@@ -2,6 +2,15 @@ import { auth } from './firebase';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, Firestore } from 'firebase/firestore';
 import { OperationType, FirestoreErrorInfo, Group, UserRole, Fine, RecurringFine, GroupEnabledFeatures, Payment, FineTemplate, GroupedFineCategory } from './types';
 
+export function generateShareCode(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let result = '';
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 export function isFeatureEnabled(group: Group | undefined, featureKey: keyof GroupEnabledFeatures): boolean {
   if (!group || !group.enabledFeatures) return true;
   const val = group.enabledFeatures[featureKey];

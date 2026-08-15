@@ -3,7 +3,7 @@ import { User } from 'firebase/auth';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Group, GroupMemberRole, OperationType } from '../types';
-import { getUserRole, handleFirestoreError, cn } from '../utils';
+import { getUserRole, handleFirestoreError, generateShareCode, cn } from '../utils';
 import { 
   Share2, 
   X, 
@@ -20,7 +20,11 @@ import {
   Send,
   HelpCircle,
   ExternalLink,
-  AlertTriangle
+  AlertTriangle,
+  KeyRound,
+  RefreshCw,
+  MessageCircle,
+  ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -36,11 +40,14 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
   const [emailInput, setEmailInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [isRegeneratingCode, setIsRegeneratingCode] = useState(false);
 
-  // Local state for instant optimistic UI updates (so deleted users vanish immediately!)
+  // Local state for instant optimistic UI updates
   const [localSharedUsers, setLocalSharedUsers] = useState<GroupMemberRole[]>(group.sharedUsers || []);
 
   useEffect(() => {
@@ -59,9 +66,51 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
     }
   }, [isOwner]);
 
+  // Ensure group has a shareCode
+  useEffect(() => {
+    if (!group.shareCode && isOwner && isOpen) {
+      const newCode = generateShareCode();
+      updateDoc(doc(db, 'groups', group.id), { shareCode: newCode }).catch(console.error);
+    }
+  }, [group.id, group.shareCode, isOwner, isOpen]);
+
   if (!isOpen) return null;
 
-  const joinLink = `${window.location.origin}${window.location.pathname}?join=${group.id}`;
+  const currentCode = group.shareCode || group.id;
+  const joinLink = `${window.location.origin}${window.location.pathname}?join=${currentCode}`;
+
+  const handleRegenerateCode = async () => {
+    if (!isOwner) return;
+    setIsRegeneratingCode(true);
+    try {
+      const newCode = generateShareCode();
+      await updateDoc(doc(db, 'groups', group.id), { shareCode: newCode });
+      setSuccessMsg(`Byl vygenerován nový kód kasy: ${newCode}`);
+    } catch (err: any) {
+      setErrorMsg('Chyba při změně kódu kasy: ' + (err.message || 'Neznámá chyba'));
+    } finally {
+      setIsRegeneratingCode(false);
+    }
+  };
+
+  const copyDirectLink = () => {
+    navigator.clipboard.writeText(joinLink);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const copyCodeOnly = () => {
+    navigator.clipboard.writeText(currentCode);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const copyFullInvite = () => {
+    const shareText = `Ahoj! Zvu tě ke sledování naší týmové kasy "${group.name}".\n\n📌 Kód kasy pro připojení: ${currentCode}\n🔗 Přímý odkaz pro otevření:\n${joinLink}\n\nPo přihlášení Google účtem se ti kasa automaticky otevře v režimu pro čtení (uvidíš přehledy, dluhy a statistiky).`;
+    navigator.clipboard.writeText(shareText);
+    setCopiedInvite(true);
+    setTimeout(() => setCopiedInvite(false), 2500);
+  };
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,13 +139,13 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
       return;
     }
 
+    const newRole = isOwner ? roleInput : 'viewer';
     const newEntry: GroupMemberRole = {
       email: cleanEmail,
-      role: isOwner ? roleInput : 'viewer',
+      role: newRole,
       addedAt: Date.now()
     };
 
-    // Optimistically add to local list immediately
     setLocalSharedUsers(prev => [...prev, newEntry]);
     setIsSubmitting(true);
 
@@ -118,9 +167,8 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
       });
 
       setEmailInput('');
-      setSuccessMsg(`Přístup byl udělen pro ${cleanEmail}! Pošlete uživateli pozvánkový odkaz níže.`);
+      setSuccessMsg(`Přístup v roli ${newRole === 'editor' ? 'Editor' : 'Čtenář'} byl úspěšně udělen pro ${cleanEmail}!`);
     } catch (err: any) {
-      // Rollback on error
       setLocalSharedUsers(group.sharedUsers || []);
       console.error('Error sharing group:', err);
       setErrorMsg('Chyba při sdílení kasy: ' + (err.message || 'Neznámá chyba'));
@@ -138,7 +186,6 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
     }
     const cleanTarget = targetEmail.toLowerCase();
 
-    // Optimistically update local state
     setLocalSharedUsers(prev => prev.map(u => (u.email?.toLowerCase() === cleanTarget) ? { ...u, role: newRole } : u));
 
     setIsSubmitting(true);
@@ -172,7 +219,6 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
       return;
     }
 
-    // Optimistically remove from local state IMMEDIATELY so the row disappears at once!
     setLocalSharedUsers(prev => prev.filter(u => u.email?.toLowerCase() !== cleanTarget));
 
     setIsSubmitting(true);
@@ -193,7 +239,6 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
         viewerUids
       });
     } catch (err) {
-      // Rollback on error
       setLocalSharedUsers(group.sharedUsers || []);
       handleFirestoreError(err, OperationType.UPDATE, `groups/${group.id}`);
     } finally {
@@ -236,13 +281,6 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
     }
   };
 
-  const copyShareInfo = () => {
-    const shareText = `Ahoj! Přidávám tě do týmové kasy "${group.name}".\n\nPřipoj se přihlášením přes svůj Google e-mail na tomto odkazu:\n${joinLink}`;
-    navigator.clipboard.writeText(shareText);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2500);
-  };
-
   return (
     <AnimatePresence>
       <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
@@ -260,7 +298,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
           initial={{ scale: 0.95, opacity: 0, y: 15 }}
           animate={{ scale: 1, opacity: 1, y: 0 }}
           exit={{ scale: 0.95, opacity: 0, y: 15 }}
-          className="relative w-full max-w-xl bg-white rounded-[2.5rem] shadow-2xl p-6 md:p-8 overflow-hidden border border-slate-100 max-h-[90vh] flex flex-col"
+          className="relative w-full max-w-2xl bg-white rounded-[2.5rem] shadow-2xl p-6 md:p-8 overflow-hidden border border-slate-100 max-h-[90vh] flex flex-col"
         >
           {/* Header */}
           <div className="flex justify-between items-start mb-6 shrink-0">
@@ -284,40 +322,126 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
           </div>
 
           <div className="overflow-y-auto custom-scrollbar pr-1 space-y-6 flex-1">
-            {/* Direct Link Banner */}
-            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 rounded-3xl p-5 space-y-3">
+            {/* 1. READER QUICK SHARING SECTION (Code & Link) */}
+            <div className="bg-gradient-to-br from-blue-50/90 via-indigo-50/50 to-slate-50 border border-blue-200/80 rounded-3xl p-5 md:p-6 space-y-4 shadow-sm">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Send className="w-4 h-4 text-blue-600" />
-                  <h3 className="text-xs font-black uppercase tracking-wider text-blue-900">
-                    Pozvánka kase a odkaz
-                  </h3>
+                  <span className="p-1.5 bg-blue-600 text-white rounded-lg">
+                    <KeyRound className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-blue-950">
+                      Rychlé sdílení pro čtenáře
+                    </h3>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      Nemusíte ručně zadávat e-maily – kdokoliv se připojí přes kód nebo odkaz, získá roli Čtenáře.
+                    </p>
+                  </div>
                 </div>
+
+                <span className="px-2.5 py-1 bg-amber-100 text-amber-900 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0">
+                  <Eye className="w-3 h-3 text-amber-700" /> Čtenář
+                </span>
+              </div>
+
+              {/* Code Box & Direct Link Box */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                {/* Short Code Card */}
+                <div className="p-4 bg-white border border-blue-100 rounded-2xl flex flex-col justify-between space-y-2 shadow-xs">
+                  <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    <span>Kód kasy pro vstup</span>
+                    {isOwner && (
+                      <button
+                        type="button"
+                        onClick={handleRegenerateCode}
+                        disabled={isRegeneratingCode}
+                        title="Vygenerovat nový kód"
+                        className="text-slate-400 hover:text-blue-600 flex items-center gap-1 transition-colors font-bold text-[9px]"
+                      >
+                        <RefreshCw className={cn("w-3 h-3", isRegeneratingCode && "animate-spin")} />
+                        <span>Nový kód</span>
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="font-mono text-base font-black tracking-wider text-slate-900 bg-slate-50 px-2.5 py-1.5 rounded-xl border border-slate-200/60 shrink-0">
+                      {currentCode}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={copyCodeOnly}
+                      className="px-2.5 py-1.5 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 shadow-sm"
+                    >
+                      {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedCode ? 'Zkopírováno' : 'Kód'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Direct Link Card */}
+                <div className="p-4 bg-white border border-blue-100 rounded-2xl flex flex-col justify-between space-y-2 shadow-xs">
+                  <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    <span>Přímý odkaz</span>
+                    <ExternalLink className="w-3 h-3 text-slate-400" />
+                  </div>
+                  
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-mono text-slate-600 truncate bg-slate-50 px-3 py-2 rounded-xl border border-slate-200/60 flex-1">
+                      {joinLink}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={copyDirectLink}
+                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 shadow-sm"
+                    >
+                      {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedLink ? 'Zkopírováno' : 'Odkaz'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Full Chat Invitation Button */}
+              <div className="pt-1 flex flex-col sm:flex-row gap-2">
                 <button
-                  onClick={copyShareInfo}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-500/10 flex items-center gap-1.5 shrink-0"
+                  type="button"
+                  onClick={copyFullInvite}
+                  className="w-full py-2.5 px-4 bg-white hover:bg-blue-50 border border-blue-200 text-blue-800 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-xs"
                 >
-                  {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedLink ? 'Zkopírováno!' : 'Zkopírovat pozvánku'}
+                  <MessageCircle className="w-4 h-4 text-emerald-600" />
+                  {copiedInvite ? (
+                    <span className="text-emerald-700 flex items-center gap-1">
+                      <Check className="w-3.5 h-3.5" /> Text pozvánky byl zkopírován do schránky!
+                    </span>
+                  ) : (
+                    <span>Zkopírovat celou pozvánku (pro WhatsApp / SMS / Messenger)</span>
+                  )}
                 </button>
               </div>
-              <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                Odkaz pošlete uživateli e-mailem nebo na WhatsApp. Jakmile se přihlásí se svým e-mailem, kasa se mu ihned otevře.
-              </p>
-              <div className="p-2.5 bg-white border border-blue-100 rounded-xl text-[11px] font-mono text-slate-600 truncate flex items-center justify-between">
-                <span className="truncate pr-2">{joinLink}</span>
-                <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+
+              {/* Reader Explainer */}
+              <div className="p-3 bg-white/80 border border-blue-200/60 rounded-2xl flex items-start gap-2.5 text-xs text-slate-600">
+                <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong>Bezpečný přístup Čtenáře:</strong> Přes tento kód a odkaz se kdokoliv dostane do kasy <em>pouze pro prohlížení</em> (vidí pokuty, platby a grafy, ale nemůže nic měnit ani mazat). <strong>Editora</strong> můžete pozvat níže zadáním jeho e-mailu.
+                </p>
               </div>
             </div>
 
-            {/* Invite Form (only if Owner or Editor) */}
+            {/* 2. INVITE EDITOR (OR SPECIFIC EMAIL) SECTION */}
             {canManage ? (
               <div className="bg-slate-50 border border-slate-200/80 rounded-3xl p-5 space-y-4">
                 <div className="flex items-center gap-2">
                   <UserPlus className="w-4 h-4 text-blue-600" />
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">
-                    Udělit přístup novému e-mailu
-                  </h3>
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                      Pozvat Editora nebo konkrétní e-mail
+                    </h3>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      Roli Editora (plná práva na zápis pokut, plateb a úprav) může udělit pouze Vlastník kasy.
+                    </p>
+                  </div>
                 </div>
 
                 <form onSubmit={handleAddUser} className="space-y-3">
@@ -327,7 +451,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                     </label>
                     <input
                       type="email"
-                      placeholder="např. kamos@gmail.com"
+                      placeholder="např. pokladnik@gmail.com"
                       value={emailInput}
                       onChange={(e) => setEmailInput(e.target.value)}
                       className="w-full px-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
@@ -336,7 +460,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
 
                   <div>
                     <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-1.5">
-                      Oprávnění / Role
+                      Oprávnění / Role pro tento e-mail
                     </label>
                     <div className="grid grid-cols-2 gap-3">
                       <button
@@ -357,12 +481,12 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                         <div className="flex items-center justify-between">
                           <span className="font-extrabold text-xs flex items-center gap-1.5">
                             <Edit3 className="w-3.5 h-3.5 text-blue-600" />
-                            Editor
+                            Editor (Plný přístup)
                           </span>
                           {roleInput === 'editor' && <Check className="w-4 h-4 text-blue-600" />}
                         </div>
                         <span className="text-[10px] text-slate-500 font-medium">
-                          {!isOwner ? 'Udělit může pouze Vlastník' : 'Může zápis, úpravy, platby i členy.'}
+                          {!isOwner ? 'Udělit může pouze Vlastník' : 'Může zapisovat pokuty, platby, výdaje a spravovat členy.'}
                         </span>
                       </button>
 
@@ -379,12 +503,12 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                         <div className="flex items-center justify-between">
                           <span className="font-extrabold text-xs flex items-center gap-1.5">
                             <Eye className="w-3.5 h-3.5 text-amber-600" />
-                            Čtenář
+                            Čtenář (Pouze prohlížení)
                           </span>
                           {roleInput === 'viewer' && <Check className="w-4 h-4 text-amber-600" />}
                         </div>
                         <span className="text-[10px] text-slate-500 font-medium">
-                          Pouze pro prohlížení, nic nemění.
+                          Může nahlížet na data, nic nemění ani nemaže.
                         </span>
                       </button>
                     </div>
@@ -421,22 +545,15 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                     Udělit přístup ke kase
                   </button>
                 </form>
-
-                <div className="flex items-start gap-2 pt-1 text-[11px] text-slate-500">
-                  <HelpCircle className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-                  <p>
-                    <strong>Poznámka:</strong> Aplikace neodesílá automatické e-maily. Po přidání e-mailu zašlete uživateli pozvánkový odkaz výše.
-                  </p>
-                </div>
               </div>
             ) : (
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800 space-y-1">
                 <p className="font-bold">Jste v režimu Pouze pro čtení</p>
-                <p>Nové uživatele může přidávat pouze Vlastník nebo Editor kasy.</p>
+                <p>Nové uživatele a editory může přidávat pouze Vlastník nebo Editor kasy.</p>
               </div>
             )}
 
-            {/* List of Users with Access */}
+            {/* 3. LIST OF USERS WITH ACCESS */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-black uppercase tracking-wider text-slate-500">
@@ -583,7 +700,7 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
                 <div>
                   <h3 className="text-lg font-black text-slate-900">Opustit sdílenou kasu?</h3>
                   <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                    Opravdu chcete opustit kasu <span className="font-bold text-slate-800">"{group.name}"</span>? Okamžitě přijdete o přístup ke všem datům a zpátky se nedostanete, dokud vám vlastník nepošle novou pozvánku.
+                    Opravdu chcete opustit kasu <span className="font-bold text-slate-800">"{group.name}"</span>? Okamžitě přijdete o přístup ke všem datům a zpátky se nedostanete, dokud se znovu nepřipojíte přes kód nebo odkaz.
                   </p>
                 </div>
                 <div className="flex gap-3 pt-2">
@@ -619,4 +736,5 @@ export default function ShareModal({ group, user, isOpen, onClose, onLeave }: Sh
     </AnimatePresence>
   );
 }
+
 
