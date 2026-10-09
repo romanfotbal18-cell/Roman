@@ -6,6 +6,7 @@ import { handleFirestoreError, formatCurrency, getCurrencySymbol, formatDate, cn
 import { TrendingUp, TrendingDown, ReceiptText, ListFilter, Plus, Search, Calendar, History, Wallet, X, Edit2, Trash2, Save, Trash, Users, UserPlus, Eye, Folder, FolderPlus, ArrowLeftRight, Coins, Sparkles, Check, Layers, PiggyBank, AlertCircle, Info, FolderOpen, FileSpreadsheet, Building2, Landmark, CreditCard, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ExportFinanceModal from './ExportFinanceModal';
+import AccountingExportModal from './AccountingExportModal';
 
 interface CashboxManagementProps {
   group: Group;
@@ -86,6 +87,7 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
 
   // Export Modal State
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isAccountingExportOpen, setIsAccountingExportOpen] = useState(false);
 
   const incomeCategories = ['Zůstatek', 'Pokuta', 'Sponzor', 'Příspěvek', 'Jiné'];
   const expenseCategories = ['Akce', 'Nákup', 'Služby', 'Cestovné', 'Občerstvení', 'Jiné'];
@@ -1055,8 +1057,16 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
               </button>
             )}
             <button
+              onClick={() => setIsAccountingExportOpen(true)}
+              className="flex-1 sm:flex-initial bg-slate-900 hover:bg-black text-white py-2.5 px-4 text-xs uppercase tracking-wider font-bold rounded-2xl flex items-center justify-center gap-2 transition-all shadow-md shadow-slate-900/10 cursor-pointer"
+              title="Exportovat historii transakcí a výdajů do CSV pro účetnictví"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+              <span>Účetní CSV export</span>
+            </button>
+            <button
               onClick={() => setIsExportModalOpen(true)}
-              className="flex-1 sm:flex-initial bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 py-2.5 px-4 text-xs uppercase tracking-wider font-bold rounded-2xl flex items-center justify-center gap-2 transition-all"
+              className="flex-1 sm:flex-initial bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 py-2.5 px-4 text-xs uppercase tracking-wider font-bold rounded-2xl flex items-center justify-center gap-2 transition-all cursor-pointer"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
               <span>Export financí</span>
@@ -1069,13 +1079,23 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
             <Eye className="w-5 h-5 text-amber-600 shrink-0" />
             <span>Režim čtenáře — operace v pokladně jsou zakázány.</span>
           </p>
-          <button
-            onClick={() => setIsExportModalOpen(true)}
-            className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 py-2 px-3 text-xs uppercase tracking-wider font-bold rounded-xl flex items-center gap-2 shadow-xs"
-          >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-            <span>Export financí</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsAccountingExportOpen(true)}
+              className="bg-slate-900 hover:bg-black text-white py-2 px-3 text-xs uppercase tracking-wider font-bold rounded-xl flex items-center gap-1.5 shadow-xs cursor-pointer"
+              title="Exportovat historii transakcí a výdajů do CSV pro účetnictví"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Účetní CSV</span>
+            </button>
+            <button
+              onClick={() => setIsExportModalOpen(true)}
+              className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 py-2 px-3 text-xs uppercase tracking-wider font-bold rounded-xl flex items-center gap-2 shadow-xs cursor-pointer"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Export financí</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1474,6 +1494,16 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
                 <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
+
+            <button
+              type="button"
+              onClick={() => setIsAccountingExportOpen(true)}
+              title="Exportovat historii transakcí a výdajů do CSV pro účetnictví"
+              className="px-3.5 py-1.5 bg-slate-900 hover:bg-black text-white text-[10px] font-black uppercase tracking-wider rounded-xl flex items-center gap-1.5 transition-all shadow-xs shrink-0 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Export CSV (Účetnictví)</span>
+            </button>
           </div>
         </div>
 
@@ -2740,6 +2770,18 @@ export default function CashboxManagement({ group, period }: CashboxManagementPr
         period={period}
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
+      />
+
+      {/* Accounting CSV & Excel Export Modal */}
+      <AccountingExportModal
+        group={group}
+        period={period}
+        transactions={transactions}
+        isOpen={isAccountingExportOpen}
+        onClose={() => setIsAccountingExportOpen(false)}
+        initialFilterAccount={filterAccount}
+        initialFilterType={filterType}
+        initialFilterCategory={filterCategory}
       />
     </div>
   );

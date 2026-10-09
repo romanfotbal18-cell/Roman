@@ -6,6 +6,7 @@ import { formatCurrency, getCurrencySymbol, formatDate, cn, groupFinesIntoCatego
 import { X, FileSpreadsheet, Download, Loader2, Calendar, Target, Folder, Award, Users, ReceiptText, Wallet, Check, Copy, Flame, PieChart, Sparkles, AlertTriangle, UserCheck, UserX, Search, CheckSquare, Square, Filter, QrCode, Building2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
+import { downloadAccountingCSV } from '../accountingExport';
 
 export type MemberFilterType = 'all' | 'active' | 'inactive' | 'debt' | 'overpaid' | 'settled' | 'groups' | 'custom';
 
@@ -381,16 +382,37 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
       XLSX.utils.book_append_sheet(workbook, wsFines, 'Historie pokut');
     }
 
-    // Sheet 5: Výdaje a Příjmy
+    // Sheet 5: Výdaje a Příjmy (Kompletní účetní deník)
     if (includeTransactions && filteredTransactions.length > 0) {
-      const txData = filteredTransactions.map(t => ({
-        'Datum': formatDate(t.createdAt),
-        'Typ': t.type === 'income' ? 'Příjem' : 'Výdaj',
-        'Kategorie': t.category || 'Nespecifikováno',
-        [`Částka (${currSymbol})`]: Math.abs(t.amount),
-        'Od / Komu': t.fromWho || '-',
-        'Poznámka': t.note || '-'
-      }));
+      const txData = filteredTransactions.map((t, idx) => {
+        const isTransfer = t.category === 'Převod' || t.source === 'transfer' || !!t.transferPairId;
+        const typeLabel = isTransfer ? 'Převod' : t.type === 'income' ? 'Příjem' : 'Výdaj';
+        const accountLabel = (t.account === 'bank' || t.paymentMethod === 'bank' || t.paymentMethod === 'purchase') ? 'Bankovní účet' : 'Hotovostní pokladna';
+        const isIncome = t.type === 'income' && !isTransfer;
+        const isExpense = t.type === 'expense' && !isTransfer;
+
+        let breakdownStr = '';
+        if (t.isSummary && t.subItems && t.subItems.length > 0) {
+          breakdownStr = t.subItems.map((si, i) => `#${i + 1} ${si.note || 'Položka'}: ${si.amount} ${currSymbol}`).join('; ');
+        } else if (t.isDebtExpense && t.debtDetails && t.debtDetails.length > 0) {
+          breakdownStr = t.debtDetails.map(d => `${d.memberName}: ${d.amount} ${currSymbol}`).join('; ');
+        }
+
+        return {
+          'Číslo dokladu': `DOK-${String(idx + 1).padStart(4, '0')}`,
+          'Datum': formatDate(t.createdAt),
+          'Typ dokladu': typeLabel,
+          'Pokladna / Účet': accountLabel,
+          'Kategorie': t.category || (isTransfer ? 'Převod' : 'Nespecifikováno'),
+          [`Příjem (${currSymbol})`]: isIncome ? Math.abs(t.amount) : '',
+          [`Výdaj (${currSymbol})`]: isExpense ? Math.abs(t.amount) : '',
+          [`Částka se znaménkem (${currSymbol})`]: t.amount,
+          'Partner / Od koho / Komu': t.fromWho || '-',
+          'Popis / Účel dokladu': t.note || '-',
+          'Způsob úhrady': t.paymentMethod === 'bank' ? 'Bankovní převod' : t.paymentMethod === 'purchase' ? 'Proplacený nákup' : 'Hotovost',
+          'Rozpis položek / Dlužníci': breakdownStr || '-'
+        };
+      });
       const wsTx = XLSX.utils.json_to_sheet(txData);
       XLSX.utils.book_append_sheet(workbook, wsTx, 'Pokladna a výdaje');
     }
@@ -480,7 +502,16 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
     URL.revokeObjectURL(url);
   };
 
-  // 3. EXPORT DIRECT PDF DOWNLOAD VIA HTML2PDF
+  // 3. EXPORT DEDICATED ACCOUNTING TRANSACTIONS CSV
+  const handleExportAccountingCSV = () => {
+    downloadAccountingCSV(filteredTransactions, group, period, {
+      delimiter: ';',
+      decimalSeparator: ',',
+      includeSummaryRow: true
+    });
+  };
+
+  // 4. EXPORT DIRECT PDF DOWNLOAD VIA HTML2PDF
   const handleDownloadPDF = async () => {
     if (isGeneratingPdf) return;
     setIsGeneratingPdf(true);
@@ -1552,19 +1583,19 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
                   </span>
                 </button>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
                   <button
-                    onClick={handleDownloadPDF}
-                    disabled={isGeneratingPdf}
-                    className="p-3 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-rose-600/15 transition-all active:scale-95 disabled:opacity-50"
+                    onClick={handleExportAccountingCSV}
+                    className="p-3 bg-slate-900 hover:bg-black text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-slate-900/15 transition-all active:scale-95 cursor-pointer"
+                    title="Exportovat historii transakcí a výdajů do CSV formátu pro účetnictví"
                   >
-                    {isGeneratingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                    <span>Stáhnout PDF přímo</span>
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                    <span>Účetní CSV transakcí</span>
                   </button>
 
                   <button
                     onClick={handleExportExcel}
-                    className="p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/15 transition-all active:scale-95"
+                    className="p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/15 transition-all active:scale-95 cursor-pointer"
                   >
                     <FileSpreadsheet className="w-4 h-4" />
                     <span>MS Excel (.xlsx)</span>
@@ -1572,10 +1603,19 @@ export default function ExportFinanceModal({ group, period, isOpen, onClose }: E
 
                   <button
                     onClick={handleExportCSV}
-                    className="p-3 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-slate-900/15 transition-all active:scale-95"
+                    className="p-3 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-slate-900/15 transition-all active:scale-95 cursor-pointer"
                   >
-                    <Download className="w-4 h-4" />
-                    <span>CSV (.csv)</span>
+                    <Download className="w-4 h-4 text-slate-300" />
+                    <span>Kompletní report (CSV)</span>
+                  </button>
+
+                  <button
+                    onClick={handleDownloadPDF}
+                    disabled={isGeneratingPdf}
+                    className="p-3 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-rose-600/15 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isGeneratingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                    <span>Stáhnout PDF přímo</span>
                   </button>
                 </div>
               </div>
